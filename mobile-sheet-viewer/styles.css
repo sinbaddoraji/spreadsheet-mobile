@@ -1,0 +1,130 @@
+/* Mobile Sheet Viewer Styles */
+.mobile-sheet-viewer {
+    width: 100%;
+    height: 100%;
+    padding: 8px;
+    box-sizing: border-box;
+}
+
+.sheet-container {
+    margin-bottom: 20px;
+}
+
+.sheet-title {
+    margin: 0 0 10px 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.sheet-table-container {
+    overflow: auto;
+    max-width: 100%;
+    max-height: 70vh;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    -webkit-overflow-scrolling: touch;
+}
+
+.sheet-table {
+    border-collapse: collapse;
+    font-size: 14px;
+    min-width: 100%;
+    background: var(--background-primary);
+}
+
+.sheet-row {
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.sheet-cell {
+    padding: 8px 12px;
+    border-right: 1px solid var(--background-modifier-border);
+    vertical-align: top;
+    white-space: nowrap;
+    color: var(--text-normal);
+    min-width: 80px;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sheet-cell:last-child {
+    border-right: none;
+}
+
+.sheet-header-row {
+    background: var(--background-modifier-hover);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.sheet-header-col {
+    background: var(--background-modifier-hover);
+    font-weight: 600;
+    position: sticky;
+    left: 0;
+    z-index: 5;
+}
+
+.sheet-header-row.sheet-header-col {
+    z-index: 15;
+}
+
+.sheet-no-data,
+.sheet-error {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Mobile optimizations */
+@media (max-width: 768px) {
+    .mobile-sheet-viewer {
+        padding: 4px;
+    }
+    
+    .sheet-cell {
+        padding: 6px 8px;
+        font-size: 12px;
+        min-width: 60px;
+        max-width: 120px;
+    }
+    
+    .sheet-table-container {
+        max-height: 60vh;
+    }
+    
+    .sheet-title {
+        font-size: 16px;
+    }
+}
+
+/* Extra small screens (phones in portrait) */
+@media (max-width: 480px) {
+    .sheet-cell {
+        padding: 4px 6px;
+        font-size: 11px;
+        min-width: 50px;
+        max-width: 100px;
+    }
+    
+    .sheet-table-container {
+        max-height: 50vh;
+    }
+}
+
+/* Touch improvements */
+.sheet-table-container {
+    touch-action: pan-x pan-y;
+}
+
+/* Smooth scrolling on iOS */
+@supports (-webkit-overflow-scrolling: touch) {
+    .sheet-table-container {
+        -webkit-overflow-scrolling: touch;
+    }
+}
