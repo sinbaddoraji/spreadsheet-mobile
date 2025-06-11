@@ -87,6 +87,32 @@ export interface AutoSaveState {
     retryCount: number;
 }
 
+export interface ConflictInfo {
+    type: 'file_modified' | 'concurrent_edit' | 'version_mismatch';
+    conflictId: string;
+    timestamp: Date;
+    conflictedCells: Array<{
+        row: number;
+        col: number;
+        localValue: SheetCellValue | null;
+        remoteValue: SheetCellValue | null;
+        baseValue?: SheetCellValue | null; // Original value before any changes
+    }>;
+    fileChecksum?: string;
+    lastKnownModified?: Date;
+}
+
+export interface ConflictResolution {
+    strategy: 'keep_local' | 'keep_remote' | 'merge' | 'manual';
+    resolvedCells: Array<{
+        row: number;
+        col: number;
+        resolvedValue: SheetCellValue | null;
+        reasoning?: string;
+    }>;
+    timestamp: Date;
+}
+
 export interface SheetStateManager {
     undoStack: UndoRedoAction[];
     redoStack: UndoRedoAction[];
@@ -96,6 +122,9 @@ export interface SheetStateManager {
     maxUndoSteps: number;
     autoSaveConfig: AutoSaveConfig;
     autoSaveState: AutoSaveState;
+    conflictInfo?: ConflictInfo;
+    lastFileChecksum?: string;
+    lastFileModified?: Date;
 }
 
 export class SheetParser {
@@ -768,6 +797,173 @@ export class DataManager {
 
     getSheetData(): SheetData[] {
         return this.sheetData;
+    }
+
+    // Conflict detection and resolution
+    generateFileChecksum(content: string): string {
+        // Simple hash function for file content
+        let hash = 0;
+        for (let i = 0; i < content.length; i++) {
+            const char = content.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        return hash.toString(16);
+    }
+
+    detectConflicts(currentFileContent: string, fileModifiedTime?: Date): ConflictInfo | null {
+        const currentChecksum = this.generateFileChecksum(currentFileContent);
+        const hasFileChanged = this.stateManager.lastFileChecksum && 
+                               this.stateManager.lastFileChecksum !== currentChecksum;
+        
+        const hasTimeChanged = fileModifiedTime && 
+                              this.stateManager.lastFileModified && 
+                              fileModifiedTime > this.stateManager.lastFileModified;
+
+        if (hasFileChanged || hasTimeChanged) {
+            // Parse the current file content to compare with local changes
+            const remoteSheetData = SheetParser.parse(currentFileContent);
+            const conflictedCells = this.findConflictedCells(remoteSheetData);
+
+            if (conflictedCells.length > 0) {
+                const conflict: ConflictInfo = {
+                    type: hasTimeChanged ? 'file_modified' : 'version_mismatch',
+                    conflictId: `conflict_${Date.now()}`,
+                    timestamp: new Date(),
+                    conflictedCells,
+                    fileChecksum: currentChecksum,
+                    lastKnownModified: fileModifiedTime
+                };
+
+                this.stateManager.conflictInfo = conflict;
+                return conflict;
+            }
+        }
+
+        // Update tracking info even if no conflicts
+        this.stateManager.lastFileChecksum = currentChecksum;
+        this.stateManager.lastFileModified = fileModifiedTime || new Date();
+
+        return null;
+    }
+
+    private findConflictedCells(remoteSheetData: SheetData[]): Array<{
+        row: number;
+        col: number;
+        localValue: SheetCellValue | null;
+        remoteValue: SheetCellValue | null;
+        baseValue?: SheetCellValue | null;
+    }> {
+        const conflicts: Array<{
+            row: number;
+            col: number;
+            localValue: SheetCellValue | null;
+            remoteValue: SheetCellValue | null;
+            baseValue?: SheetCellValue | null;
+        }> = [];
+
+        const modifiedCells = this.getModifiedCells();
+
+        for (const { sheetId, row, col, state } of modifiedCells) {
+            // Find corresponding sheet in remote data
+            const remoteSheet = remoteSheetData.find(s => s.id === sheetId);
+            if (!remoteSheet) continue;
+
+            const remoteCell = SheetParser.getCellAt(remoteSheet, row, col);
+            const remoteCellValue = remoteCell ? remoteCell.v : null;
+            const localCellValue = state.currentValue;
+            const baseCellValue = state.originalValue;
+
+            // Check if remote value differs from both local and base values
+            const remoteValueStr = JSON.stringify(remoteCellValue);
+            const localValueStr = JSON.stringify(localCellValue);
+            const baseValueStr = JSON.stringify(baseCellValue);
+
+            if (remoteValueStr !== baseValueStr && remoteValueStr !== localValueStr) {
+                conflicts.push({
+                    row,
+                    col,
+                    localValue: localCellValue,
+                    remoteValue: remoteCellValue,
+                    baseValue: baseCellValue
+                });
+            }
+        }
+
+        return conflicts;
+    }
+
+    async resolveConflicts(resolution: ConflictResolution): Promise<boolean> {
+        if (!this.stateManager.conflictInfo) {
+            return false;
+        }
+
+        try {
+            const conflict = this.stateManager.conflictInfo;
+            
+            for (const resolvedCell of resolution.resolvedCells) {
+                const { row, col, resolvedValue } = resolvedCell;
+                
+                // Find the corresponding sheet
+                const sheet = this.sheetData.find(s => 
+                    conflict.conflictedCells.some(cc => cc.row === row && cc.col === col)
+                );
+                
+                if (!sheet) continue;
+
+                // Apply the resolution
+                if (resolvedValue) {
+                    const cellValue = typeof resolvedValue.v === 'string' ? resolvedValue.v : String(resolvedValue.v || '');
+                    this.updateCell(sheet.id, row, col, cellValue);
+                } else {
+                    // Clear the cell
+                    this.updateCell(sheet.id, row, col, '');
+                }
+            }
+
+            // Clear conflict info
+            this.stateManager.conflictInfo = undefined;
+            
+            return true;
+        } catch (error) {
+            console.error('Failed to resolve conflicts:', error);
+            return false;
+        }
+    }
+
+    hasActiveConflicts(): boolean {
+        return !!this.stateManager.conflictInfo;
+    }
+
+    getActiveConflict(): ConflictInfo | null {
+        return this.stateManager.conflictInfo || null;
+    }
+
+    createBackup(): string {
+        return JSON.stringify({
+            timestamp: new Date().toISOString(),
+            sheetData: this.sheetData,
+            cellStates: Array.from(this.stateManager.cellStates.entries()),
+            undoStack: this.stateManager.undoStack,
+            checksum: this.stateManager.lastFileChecksum
+        });
+    }
+
+    restoreFromBackup(backupData: string): boolean {
+        try {
+            const backup = JSON.parse(backupData);
+            
+            this.sheetData = backup.sheetData;
+            this.stateManager.cellStates = new Map(backup.cellStates);
+            this.stateManager.undoStack = backup.undoStack || [];
+            this.stateManager.redoStack = []; // Clear redo stack after restore
+            this.stateManager.lastFileChecksum = backup.checksum;
+            
+            return true;
+        } catch (error) {
+            console.error('Failed to restore from backup:', error);
+            return false;
+        }
     }
 
     // Auto-save functionality

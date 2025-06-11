@@ -1,5 +1,5 @@
 import { TextFileView, TFile, WorkspaceLeaf } from 'obsidian';
-import { SheetParser, SheetData, DataManager, ValidationRule, AutoSaveState } from './sheetParser';
+import { SheetParser, SheetData, DataManager, ValidationRule, AutoSaveState, ConflictInfo, ConflictResolution } from './sheetParser';
 import { FormulaEngine } from './formulaEngine';
 
 export const VIEW_TYPE_SHEET = 'sheet-view';
@@ -17,6 +17,9 @@ export class SheetView extends TextFileView {
     private swipeThreshold: number = 50;
     private longPressDelay: number = 500;
     private gridDimensions: { rows: number; cols: number } = { rows: 0, cols: 0 };
+    private fileWatcher: number | null = null;
+    private lastFileContent: string = '';
+    private conflictCheckInterval: number = 30000; // Check every 30 seconds
 
     constructor(leaf: WorkspaceLeaf) {
         super(leaf);
@@ -41,6 +44,7 @@ export class SheetView extends TextFileView {
     setViewData(data: string, clear: boolean): void {
         console.log('SheetView: setViewData called with data:', data);
         this.data = data;
+        this.lastFileContent = data;
         this.sheetData = SheetParser.parse(data);
         this.dataManager = new DataManager(this.sheetData, 100, {
             enabled: true,
@@ -51,6 +55,9 @@ export class SheetView extends TextFileView {
         
         // Set up auto-save callback
         this.dataManager.setSaveCallback(() => this.performSave());
+        
+        // Initialize conflict detection
+        this.initializeConflictDetection();
         
         console.log('SheetView: parsed sheet data:', this.sheetData);
         this.render();
@@ -63,6 +70,7 @@ export class SheetView extends TextFileView {
             this.dataManager.destroy();
             this.dataManager = null;
         }
+        this.stopConflictDetection();
         this.contentEl.empty();
     }
 
@@ -124,10 +132,17 @@ export class SheetView extends TextFileView {
         if (this.dataManager) {
             const autoSaveState = this.dataManager.getAutoSaveState();
             const isDirty = this.dataManager.isDirty();
+            const hasConflicts = this.dataManager.hasActiveConflicts();
             
-            if (autoSaveState.isSaving) {
+            if (hasConflicts) {
+                const conflictBtn = toolbar.createEl('button', {
+                    text: 'Conflicts',
+                    cls: 'sheet-conflict-indicator'
+                });
+                conflictBtn.addEventListener('click', () => this.showConflictResolutionDialog());
+            } else if (autoSaveState.isSaving) {
                 toolbar.createEl('span', {
-                    text: '💾 Saving...',
+                    text: 'Saving...',
                     cls: 'sheet-auto-save-indicator saving'
                 });
             } else if (autoSaveState.lastError) {
@@ -600,19 +615,30 @@ export class SheetView extends TextFileView {
         const isLongText = cellInfo.value.length > 50 || cellInfo.value.includes('\n');
         
         const menuItems = [
-            { label: 'Edit', action: () => this.toggleEditModeAndEdit(cellEl, cellInfo) },
+            { label: 'Edit', action: () => this.toggleEditModeAndEdit(cellEl, cellInfo), shortcut: 'F2' },
             { label: isLongText ? 'Edit as Text' : 'Edit as Multi-line', action: () => this.editCellWithType(cellEl, cellInfo, isLongText ? 'text' : 'multiline') },
-            { label: 'Copy', action: () => this.copyCellValue(cellInfo.value) },
-            { label: 'Clear', action: () => this.clearCell(cellInfo) },
+            { label: 'Copy', action: () => this.copyCellValue(cellInfo.value), shortcut: 'Ctrl+C' },
+            { label: 'Paste', action: () => this.pasteCellValue(cellInfo), shortcut: 'Ctrl+V' },
+            { label: 'Clear Cell', action: () => this.clearCell(cellInfo), shortcut: 'Del' },
+            { label: 'Delete Row', action: () => this.deleteRow(cellInfo), shortcut: 'Ctrl+Shift+-' },
+            { label: 'Delete Column', action: () => this.deleteColumn(cellInfo), shortcut: 'Ctrl+Alt+-' },
             { label: autoSaveEnabled ? 'Disable Auto-save' : 'Enable Auto-save', action: () => this.toggleAutoSave() },
-            { label: 'Cancel', action: () => menu.remove() }
+            { label: 'Cancel', action: () => menu.remove(), shortcut: 'Esc' }
         ];
 
         menuItems.forEach(item => {
             const button = menu.createEl('button', {
-                text: item.label,
                 cls: 'sheet-context-menu-item'
             });
+            
+            const labelSpan = button.createEl('span', { text: item.label });
+            if (item.shortcut) {
+                const shortcutSpan = button.createEl('span', { 
+                    text: item.shortcut,
+                    cls: 'sheet-context-menu-shortcut'
+                });
+            }
+            
             button.addEventListener('click', () => {
                 item.action();
                 menu.remove();
@@ -730,6 +756,55 @@ export class SheetView extends TextFileView {
         }
     }
 
+    private copySelectedCell(): void {
+        if (!this.selectedCell) return;
+        
+        const sheet = this.sheetData[this.selectedCell.sheetIndex];
+        const cellValue = SheetParser.getCellAt(sheet, this.selectedCell.row, this.selectedCell.col);
+        const value = cellValue ? SheetParser.getCellValue(cellValue.v) : '';
+        
+        this.copyCellValue(value);
+    }
+
+    private async pasteToSelectedCell(): Promise<void> {
+        if (!this.selectedCell || !navigator.clipboard) return;
+        
+        try {
+            const text = await navigator.clipboard.readText();
+            await this.pasteCellValue({ 
+                sheetIndex: this.selectedCell.sheetIndex,
+                row: this.selectedCell.row,
+                col: this.selectedCell.col 
+            }, text);
+        } catch (error) {
+            this.showToast('Failed to paste: clipboard access denied');
+        }
+    }
+
+    private async pasteCellValue(cellInfo: any, value?: string): Promise<void> {
+        if (!this.dataManager) return;
+        
+        try {
+            const textToPaste = value || await navigator.clipboard.readText();
+            const sheet = this.sheetData[cellInfo.sheetIndex];
+            
+            this.dataManager.updateCell(sheet.id, cellInfo.row, cellInfo.col, textToPaste);
+            this.updateDisplayText();
+            this.render();
+            this.showToast('Value pasted');
+        } catch (error) {
+            this.showToast('Failed to paste');
+        }
+    }
+
+    private cutSelectedCell(): void {
+        if (!this.selectedCell) return;
+        
+        this.copySelectedCell();
+        this.clearSelectedCell();
+        this.showToast('Cell cut to clipboard');
+    }
+
     private clearCell(cellInfo: any): void {
         if (this.dataManager) {
             const sheet = this.sheetData[cellInfo.sheetIndex];
@@ -738,6 +813,66 @@ export class SheetView extends TextFileView {
             this.render();
             this.showToast('Cell cleared');
         }
+    }
+
+    private deleteRow(cellInfo: any): void {
+        if (!this.dataManager) return;
+
+        if (confirm(`Delete row ${cellInfo.row + 1}? This action cannot be undone.`)) {
+            try {
+                const sheet = this.sheetData[cellInfo.sheetIndex];
+                
+                // Clear all cells in the row
+                const gridData = SheetParser.createGrid(sheet.celldata);
+                const { colMap } = gridData;
+                
+                colMap.forEach(col => {
+                    this.dataManager?.updateCell(sheet.id, cellInfo.row, col, '');
+                });
+                
+                this.updateDisplayText();
+                this.render();
+                this.showToast(`Row ${cellInfo.row + 1} deleted`);
+            } catch (error) {
+                this.showToast('Failed to delete row');
+            }
+        }
+    }
+
+    private deleteColumn(cellInfo: any): void {
+        if (!this.dataManager) return;
+
+        if (confirm(`Delete column ${this.getColumnName(cellInfo.col)}? This action cannot be undone.`)) {
+            try {
+                const sheet = this.sheetData[cellInfo.sheetIndex];
+                
+                // Clear all cells in the column
+                const gridData = SheetParser.createGrid(sheet.celldata);
+                const { rowMap } = gridData;
+                
+                rowMap.forEach(row => {
+                    this.dataManager?.updateCell(sheet.id, row, cellInfo.col, '');
+                });
+                
+                this.updateDisplayText();
+                this.render();
+                this.showToast(`Column ${this.getColumnName(cellInfo.col)} deleted`);
+            } catch (error) {
+                this.showToast('Failed to delete column');
+            }
+        }
+    }
+
+    private getColumnName(colIndex: number): string {
+        let result = '';
+        let index = colIndex;
+        
+        while (index >= 0) {
+            result = String.fromCharCode(65 + (index % 26)) + result;
+            index = Math.floor(index / 26) - 1;
+        }
+        
+        return result;
     }
 
     private showToast(message: string): void {
@@ -820,6 +955,43 @@ export class SheetView extends TextFileView {
 
     private handleNavigationKeys(e: KeyboardEvent): void {
         if (!this.selectedCell) return;
+
+        // Handle keyboard shortcuts with modifiers
+        if (e.ctrlKey || e.metaKey) {
+            switch (e.key.toLowerCase()) {
+                case 'c':
+                    e.preventDefault();
+                    this.copySelectedCell();
+                    break;
+                case 'v':
+                    e.preventDefault();
+                    this.pasteToSelectedCell();
+                    break;
+                case 'x':
+                    e.preventDefault();
+                    this.cutSelectedCell();
+                    break;
+                case 's':
+                    e.preventDefault();
+                    this.saveFile();
+                    break;
+                case 'z':
+                    e.preventDefault();
+                    if (e.shiftKey) {
+                        this.redo();
+                    } else {
+                        this.undo();
+                    }
+                    break;
+                case 'e':
+                    e.preventDefault();
+                    this.toggleEditMode();
+                    break;
+                default:
+                    return; // Don't prevent default for unhandled shortcuts
+            }
+            return;
+        }
 
         switch (e.key) {
             case 'ArrowUp':
@@ -1105,9 +1277,11 @@ export class SheetView extends TextFileView {
                 this.updateDisplayText();
             } else {
                 this.showToast('Invalid formula or value');
+                this.showFallbackForUnsupportedOperation('cell update', newValue);
             }
         } catch (error) {
             this.showToast('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
+            this.showFallbackForUnsupportedOperation('cell update', newValue, error);
         }
 
         this.currentEditor = null;
@@ -1165,24 +1339,42 @@ export class SheetView extends TextFileView {
     private async performSave(): Promise<void> {
         if (!this.file || !this.dataManager) return;
 
-        const serialized = SheetParser.serialize(this.dataManager.getSheetData());
-        await this.app.vault.modify(this.file, serialized);
-        this.dataManager.markClean();
-        this.updateDisplayText();
+        // Show loading state
+        this.showLoadingState('Saving...');
         
-        // Re-render to update status indicators
-        this.render();
+        try {
+            const serialized = SheetParser.serialize(this.dataManager.getSheetData());
+            await this.app.vault.modify(this.file, serialized);
+            this.dataManager.markClean();
+            this.updateDisplayText();
+            
+            this.hideLoadingState();
+            // Re-render to update status indicators
+            this.render();
+        } catch (error) {
+            this.hideLoadingState();
+            throw error;
+        }
     }
 
     private async saveFile(): Promise<void> {
         if (!this.file || !this.dataManager?.isDirty()) return;
 
+        const unsavedChanges = this.dataManager.getModifiedCells().length;
+        const confirmSave = await this.showSaveConfirmDialog(unsavedChanges);
+        
+        if (!confirmSave) return;
+
+        this.showLoadingState('Saving file...');
+        
         try {
             await this.performSave();
             this.showToast('File saved manually');
         } catch (error) {
             console.error('Failed to save file:', error);
             this.showToast('Save failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
+        } finally {
+            this.hideLoadingState();
         }
     }
 
@@ -1199,12 +1391,445 @@ export class SheetView extends TextFileView {
     // Force auto-save (useful for testing or manual triggers)
     async forceAutoSave(): Promise<void> {
         if (this.dataManager) {
+            this.showLoadingState('Auto-saving...');
             try {
                 await this.dataManager.forceAutoSave();
                 this.showToast('Auto-save completed');
             } catch (error) {
                 this.showToast('Auto-save failed');
+            } finally {
+                this.hideLoadingState();
             }
+        }
+    }
+
+    private showLoadingState(message: string): void {
+        // Remove existing loading indicator
+        const existing = document.querySelector('.sheet-loading-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'sheet-loading-overlay';
+        overlay.innerHTML = `
+            <div class="sheet-loading-content">
+                <div class="sheet-loading-spinner"></div>
+                <span class="sheet-loading-text">${message}</span>
+            </div>
+        `;
+        
+        document.body.appendChild(overlay);
+    }
+
+    private hideLoadingState(): void {
+        const overlay = document.querySelector('.sheet-loading-overlay');
+        if (overlay) {
+            overlay.remove();
+        }
+    }
+
+    private async showSaveConfirmDialog(unsavedChanges: number): Promise<boolean> {
+        return new Promise((resolve) => {
+            // Remove existing dialog
+            const existing = document.querySelector('.sheet-save-dialog');
+            if (existing) existing.remove();
+
+            const dialog = document.createElement('div');
+            dialog.className = 'sheet-save-dialog';
+            
+            dialog.innerHTML = `
+                <div class="sheet-save-dialog-content">
+                    <h3>Save Changes</h3>
+                    <p>You have ${unsavedChanges} unsaved change${unsavedChanges !== 1 ? 's' : ''}.</p>
+                    <p>Do you want to save these changes?</p>
+                    <div class="sheet-save-dialog-buttons">
+                        <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="save">Save</button>
+                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="cancel">Cancel</button>
+                    </div>
+                </div>
+            `;
+
+            const handleClick = (e: Event) => {
+                const target = e.target as HTMLElement;
+                const action = target.getAttribute('data-action');
+                
+                if (action === 'save') {
+                    resolve(true);
+                } else if (action === 'cancel') {
+                    resolve(false);
+                }
+                
+                dialog.remove();
+            };
+
+            dialog.addEventListener('click', handleClick);
+            
+            // Handle escape key
+            const handleKeydown = (e: KeyboardEvent) => {
+                if (e.key === 'Escape') {
+                    resolve(false);
+                    dialog.remove();
+                    document.removeEventListener('keydown', handleKeydown);
+                }
+            };
+            
+            document.addEventListener('keydown', handleKeydown);
+            document.body.appendChild(dialog);
+            
+            // Focus the save button
+            const saveBtn = dialog.querySelector('[data-action="save"]') as HTMLElement;
+            saveBtn?.focus();
+        });
+    }
+
+    private showFallbackForUnsupportedOperation(operation: string, value?: string, error?: any): void {
+        console.warn(`Unsupported operation: ${operation}`, { value, error });
+        
+        // Create a simple fallback dialog
+        const fallbackDialog = document.createElement('div');
+        fallbackDialog.className = 'sheet-fallback-dialog';
+        
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        fallbackDialog.innerHTML = `
+            <div class="sheet-fallback-dialog-content">
+                <h3>⚠️ Operation Not Supported</h3>
+                <p>The operation "${operation}" could not be completed.</p>
+                ${value ? `<p><strong>Value:</strong> ${value}</p>` : ''}
+                ${error ? `<p><strong>Error:</strong> ${errorMessage}</p>` : ''}
+                <div class="sheet-fallback-suggestions">
+                    <h4>Try these alternatives:</h4>
+                    <ul>
+                        <li>Simplify the formula or value</li>
+                        <li>Check for syntax errors</li>
+                        <li>Use a different format</li>
+                        <li>Save as plain text</li>
+                    </ul>
+                </div>
+                <div class="sheet-fallback-buttons">
+                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="copy-error">Copy Error</button>
+                    <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="close">Close</button>
+                </div>
+            </div>
+        `;
+
+        const handleClick = (e: Event) => {
+            const target = e.target as HTMLElement;
+            const action = target.getAttribute('data-action');
+            
+            if (action === 'copy-error') {
+                const errorDetails = `Operation: ${operation}\nValue: ${value || 'N/A'}\nError: ${errorMessage}`;
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(errorDetails);
+                    this.showToast('Error details copied to clipboard');
+                }
+            } else if (action === 'close') {
+                fallbackDialog.remove();
+            }
+        };
+
+        fallbackDialog.addEventListener('click', handleClick);
+        
+        // Auto-remove after 10 seconds
+        setTimeout(() => {
+            if (document.body.contains(fallbackDialog)) {
+                fallbackDialog.remove();
+            }
+        }, 10000);
+        
+        document.body.appendChild(fallbackDialog);
+    }
+
+    // Conflict detection and monitoring
+    private initializeConflictDetection(): void {
+        if (!this.file || !this.dataManager) return;
+
+        // Initialize file tracking
+        const fileStats = this.app.vault.adapter.stat(this.file.path);
+        fileStats.then(stats => {
+            if (this.dataManager) {
+                this.dataManager.stateManager.lastFileModified = new Date(stats.mtime);
+                this.dataManager.stateManager.lastFileChecksum = this.dataManager.generateFileChecksum(this.lastFileContent);
+            }
+        });
+
+        // Start periodic conflict checking
+        this.startConflictMonitoring();
+    }
+
+    private startConflictMonitoring(): void {
+        if (this.fileWatcher) {
+            clearInterval(this.fileWatcher);
+        }
+
+        this.fileWatcher = window.setInterval(() => {
+            this.checkForConflicts();
+        }, this.conflictCheckInterval);
+    }
+
+    private stopConflictDetection(): void {
+        if (this.fileWatcher) {
+            clearInterval(this.fileWatcher);
+            this.fileWatcher = null;
+        }
+    }
+
+    private async checkForConflicts(): Promise<void> {
+        if (!this.file || !this.dataManager) return;
+
+        try {
+            // Read current file content
+            const currentContent = await this.app.vault.read(this.file);
+            const stats = await this.app.vault.adapter.stat(this.file.path);
+            const fileModifiedTime = new Date(stats.mtime);
+
+            // Check for conflicts
+            const conflict = this.dataManager.detectConflicts(currentContent, fileModifiedTime);
+            
+            if (conflict) {
+                console.warn('Conflict detected:', conflict);
+                this.handleConflictDetected(conflict);
+            }
+
+        } catch (error) {
+            console.error('Error checking for conflicts:', error);
+        }
+    }
+
+    private handleConflictDetected(conflict: ConflictInfo): void {
+        // Update the toolbar to show conflict indicator
+        this.render();
+        
+        // Show notification
+        this.showToast(`⚠️ Conflicts detected in ${conflict.conflictedCells.length} cell${conflict.conflictedCells.length !== 1 ? 's' : ''}`);
+        
+        // Auto-show conflict resolution dialog if user is actively editing
+        if (this.isEditing) {
+            setTimeout(() => {
+                this.showConflictResolutionDialog();
+            }, 2000);
+        }
+    }
+
+    private async showConflictResolutionDialog(): Promise<void> {
+        if (!this.dataManager) return;
+
+        const conflict = this.dataManager.getActiveConflict();
+        if (!conflict) return;
+
+        // Remove existing dialog
+        const existing = document.querySelector('.sheet-conflict-dialog');
+        if (existing) existing.remove();
+
+        const dialog = document.createElement('div');
+        dialog.className = 'sheet-conflict-dialog';
+        
+        dialog.innerHTML = `
+            <div class="sheet-conflict-dialog-content">
+                <h3>🔄 Resolve Conflicts</h3>
+                <p>${conflict.conflictedCells.length} cell${conflict.conflictedCells.length !== 1 ? 's have' : ' has'} conflicting changes.</p>
+                <div class="sheet-conflict-summary">
+                    <p><strong>Conflict Type:</strong> ${this.getConflictTypeDescription(conflict.type)}</p>
+                    <p><strong>Detected:</strong> ${conflict.timestamp.toLocaleString()}</p>
+                </div>
+                <div class="sheet-conflict-cells">
+                    ${this.renderConflictedCells(conflict)}
+                </div>
+                <div class="sheet-conflict-strategies">
+                    <h4>Resolution Strategy:</h4>
+                    <div class="sheet-strategy-buttons">
+                        <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-strategy="keep_local">Keep My Changes</button>
+                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-strategy="keep_remote">Accept Remote Changes</button>
+                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-strategy="merge">Smart Merge</button>
+                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-strategy="manual">Resolve Manually</button>
+                    </div>
+                </div>
+                <div class="sheet-conflict-actions">
+                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="backup">Create Backup</button>
+                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="cancel">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        const handleClick = async (e: Event) => {
+            const target = e.target as HTMLElement;
+            const strategy = target.getAttribute('data-strategy');
+            const action = target.getAttribute('data-action');
+            
+            if (strategy) {
+                await this.resolveConflictsWithStrategy(conflict, strategy as any);
+                dialog.remove();
+            } else if (action === 'backup') {
+                await this.createBackupBeforeResolving();
+                this.showToast('Backup created successfully');
+            } else if (action === 'cancel') {
+                dialog.remove();
+            }
+        };
+
+        dialog.addEventListener('click', handleClick);
+        document.body.appendChild(dialog);
+    }
+
+    private getConflictTypeDescription(type: ConflictInfo['type']): string {
+        switch (type) {
+            case 'file_modified': return 'File was modified externally';
+            case 'concurrent_edit': return 'Concurrent editing detected';
+            case 'version_mismatch': return 'Version mismatch detected';
+            default: return 'Unknown conflict type';
+        }
+    }
+
+    private renderConflictedCells(conflict: ConflictInfo): string {
+        return conflict.conflictedCells.slice(0, 5).map(cell => {
+            const localValue = this.getCellDisplayValue(cell.localValue);
+            const remoteValue = this.getCellDisplayValue(cell.remoteValue);
+            const cellRef = this.getCellReference(cell.row, cell.col);
+            
+            return `
+                <div class="sheet-conflict-cell">
+                    <strong>${cellRef}:</strong>
+                    <div class="sheet-conflict-values">
+                        <div class="sheet-conflict-value local">
+                            <label>Your change:</label>
+                            <span>"${localValue}"</span>
+                        </div>
+                        <div class="sheet-conflict-value remote">
+                            <label>Remote change:</label>
+                            <span>"${remoteValue}"</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('') + (conflict.conflictedCells.length > 5 ? `<p>...and ${conflict.conflictedCells.length - 5} more</p>` : '');
+    }
+
+    private getCellDisplayValue(cellValue: any): string {
+        if (!cellValue) return '(empty)';
+        if (cellValue.f) return cellValue.f;
+        return String(cellValue.v || cellValue.m || '');
+    }
+
+    private getCellReference(row: number, col: number): string {
+        return `${this.getColumnName(col)}${row + 1}`;
+    }
+
+    private async resolveConflictsWithStrategy(conflict: ConflictInfo, strategy: 'keep_local' | 'keep_remote' | 'merge' | 'manual'): Promise<void> {
+        if (!this.dataManager) return;
+
+        let resolution: ConflictResolution;
+
+        switch (strategy) {
+            case 'keep_local':
+                resolution = this.createKeepLocalResolution(conflict);
+                break;
+            case 'keep_remote':
+                resolution = this.createKeepRemoteResolution(conflict);
+                break;
+            case 'merge':
+                resolution = this.createMergeResolution(conflict);
+                break;
+            case 'manual':
+                await this.showManualResolutionDialog(conflict);
+                return;
+            default:
+                return;
+        }
+
+        const success = await this.dataManager.resolveConflicts(resolution);
+        if (success) {
+            this.render();
+            this.showToast(`Conflicts resolved using "${strategy}" strategy`);
+        } else {
+            this.showToast('Failed to resolve conflicts');
+        }
+    }
+
+    private createKeepLocalResolution(conflict: ConflictInfo): ConflictResolution {
+        return {
+            strategy: 'keep_local',
+            resolvedCells: conflict.conflictedCells.map(cell => ({
+                row: cell.row,
+                col: cell.col,
+                resolvedValue: cell.localValue,
+                reasoning: 'Kept local changes'
+            })),
+            timestamp: new Date()
+        };
+    }
+
+    private createKeepRemoteResolution(conflict: ConflictInfo): ConflictResolution {
+        return {
+            strategy: 'keep_remote',
+            resolvedCells: conflict.conflictedCells.map(cell => ({
+                row: cell.row,
+                col: cell.col,
+                resolvedValue: cell.remoteValue,
+                reasoning: 'Accepted remote changes'
+            })),
+            timestamp: new Date()
+        };
+    }
+
+    private createMergeResolution(conflict: ConflictInfo): ConflictResolution {
+        return {
+            strategy: 'merge',
+            resolvedCells: conflict.conflictedCells.map(cell => {
+                // Simple merge strategy: concatenate non-empty values
+                const localStr = this.getCellDisplayValue(cell.localValue);
+                const remoteStr = this.getCellDisplayValue(cell.remoteValue);
+                
+                let mergedValue: any = cell.localValue;
+                let reasoning = 'Kept local value';
+
+                if (localStr === '(empty)' && remoteStr !== '(empty)') {
+                    mergedValue = cell.remoteValue;
+                    reasoning = 'Used remote value (local was empty)';
+                } else if (localStr !== '(empty)' && remoteStr === '(empty)') {
+                    mergedValue = cell.localValue;
+                    reasoning = 'Used local value (remote was empty)';
+                } else if (localStr !== remoteStr) {
+                    // Both have values - try to merge intelligently
+                    if (localStr.includes(remoteStr) || remoteStr.includes(localStr)) {
+                        mergedValue = localStr.length > remoteStr.length ? cell.localValue : cell.remoteValue;
+                        reasoning = 'Used longer value';
+                    } else {
+                        mergedValue = { v: `${localStr} | ${remoteStr}`, m: `${localStr} | ${remoteStr}` };
+                        reasoning = 'Concatenated both values';
+                    }
+                }
+
+                return {
+                    row: cell.row,
+                    col: cell.col,
+                    resolvedValue: mergedValue,
+                    reasoning
+                };
+            }),
+            timestamp: new Date()
+        };
+    }
+
+    private async showManualResolutionDialog(conflict: ConflictInfo): Promise<void> {
+        // For now, just show the first conflict dialog again - in a full implementation,
+        // this would show a detailed editor for each conflicted cell
+        this.showToast('Manual resolution not yet implemented. Please choose an automatic strategy.');
+    }
+
+    private async createBackupBeforeResolving(): Promise<void> {
+        if (!this.dataManager) return;
+
+        try {
+            const backup = this.dataManager.createBackup();
+            const backupFileName = `${this.file?.basename || 'sheet'}_backup_${Date.now()}.json`;
+            
+            // Save backup to a backup folder (in a real implementation, you'd create this folder)
+            // For now, we'll just store it in localStorage as a simple backup
+            localStorage.setItem(`sheet_backup_${this.file?.path}`, backup);
+            
+            console.log('Backup created:', backupFileName);
+        } catch (error) {
+            console.error('Failed to create backup:', error);
+            throw error;
         }
     }
 }
