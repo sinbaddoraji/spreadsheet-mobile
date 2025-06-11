@@ -1,6 +1,7 @@
 import { TextFileView, TFile, WorkspaceLeaf } from 'obsidian';
-import { SheetParser, SheetData, DataManager, ValidationRule, AutoSaveState, ConflictInfo, ConflictResolution } from './sheetParser';
+import { SheetParser, SheetData, DataManager, ValidationRule, AutoSaveState, ConflictInfo, ConflictResolution, CellFormat } from './sheetParser';
 import { FormulaEngine } from './formulaEngine';
+import { FormatManager } from './formatManager';
 
 export const VIEW_TYPE_SHEET = 'sheet-view';
 
@@ -22,6 +23,7 @@ export class SheetView extends TextFileView {
     private conflictCheckInterval: number = 30000; // Check every 30 seconds
     private isLargeFile: boolean = false;
     private forceEditingEnabled: boolean = false;
+    private copiedFormat: CellFormat | null = null;
     private readonly fileSizeThresholds = {
         mobile: 100000, // 100KB
         tablet: 250000, // 250KB
@@ -147,6 +149,11 @@ export class SheetView extends TextFileView {
         redoBtn.disabled = !this.dataManager?.canRedo();
         redoBtn.addEventListener('click', () => this.redo());
 
+        // Formatting toolbar (only when editing)
+        if (this.isEditing && (!this.isLargeFile || this.forceEditingEnabled)) {
+            this.renderFormattingToolbar(toolbar);
+        }
+
         // File size warning indicator
         if (this.isLargeFile) {
             const fileSizeWarning = toolbar.createEl('button', {
@@ -244,7 +251,7 @@ export class SheetView extends TextFileView {
             
             for (let c = 0; c < grid[r].length; c++) {
                 const cellData = grid[r][c];
-                const cellValue = SheetParser.getCellValue(cellData);
+                const cellValue = SheetParser.getFormattedCellValue(cellData);
                 const actualRow = rowMap[r];
                 const actualCol = colMap[c];
                 
@@ -252,6 +259,14 @@ export class SheetView extends TextFileView {
                     cls: 'sheet-cell',
                     text: cellValue
                 });
+
+                // Apply cell formatting styles
+                if (cellData?.s) {
+                    const cellStyle = SheetParser.generateCellStyle(cellData.s);
+                    if (cellStyle) {
+                        td.setAttribute('style', cellStyle);
+                    }
+                }
 
                 // Add data attributes for navigation
                 td.setAttribute('data-row', actualRow.toString());
@@ -291,7 +306,7 @@ export class SheetView extends TextFileView {
                 if (this.dataManager) {
                     const cellState = this.dataManager.getCellState(sheet.id, actualRow, actualCol);
                     if (cellState) {
-                        if (cellState.isModified) {
+                        if (cellState.isModified || cellState.isFormatModified) {
                             td.addClass('sheet-cell-modified');
                         }
                         if (!cellState.isValid) {
@@ -458,110 +473,286 @@ export class SheetView extends TextFileView {
     }
 
     private setupMobileInput(input: HTMLInputElement | HTMLTextAreaElement): void {
-        // Prevent zoom on iOS when focusing input
-        input.style.fontSize = '16px';
+        // Device-specific optimizations
+        const deviceType = this.detectDeviceType();
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isAndroid = /Android/.test(navigator.userAgent);
         
-        // Handle virtual keyboard
+        // Prevent zoom on iOS when focusing input (minimum 16px)
+        input.style.fontSize = isIOS ? '16px' : '14px';
+        
+        // iOS-specific viewport handling
+        if (isIOS) {
+            input.style.transformOrigin = 'top left';
+            input.style.webkitUserSelect = 'text';
+            input.style.webkitTouchCallout = 'default';
+        }
+        
+        // Android-specific optimizations
+        if (isAndroid) {
+            input.style.webkitAppearance = 'none';
+            input.style.borderRadius = '4px';
+        }
+        
+        // Handle virtual keyboard with device-specific delays
         input.addEventListener('focus', () => {
-            this.handleVirtualKeyboard(true);
+            this.handleVirtualKeyboard(true, deviceType);
         });
         
         input.addEventListener('blur', () => {
-            this.handleVirtualKeyboard(false);
+            this.handleVirtualKeyboard(false, deviceType);
         });
 
-        // Auto-resize input based on content
+        // Auto-resize input based on content with debouncing
+        let resizeTimeout: number | null = null;
         input.addEventListener('input', () => {
-            if (input instanceof HTMLTextAreaElement) {
-                this.autoResizeTextarea(input);
-            } else {
-                this.autoResizeInput(input);
-            }
+            if (resizeTimeout) clearTimeout(resizeTimeout);
+            resizeTimeout = window.setTimeout(() => {
+                if (input instanceof HTMLTextAreaElement) {
+                    this.autoResizeTextarea(input);
+                } else {
+                    this.autoResizeInput(input);
+                }
+            }, 100);
         });
 
-        // Initial resize
+        // Initial resize with device-specific delay
+        const initialDelay = isIOS ? 200 : isAndroid ? 150 : 50;
         setTimeout(() => {
             if (input instanceof HTMLTextAreaElement) {
                 this.autoResizeTextarea(input);
             } else {
                 this.autoResizeInput(input);
             }
-        }, 0);
+        }, initialDelay);
+        
+        // Add touch event handling for better mobile interaction
+        this.setupInputTouchHandling(input);
+    }
+    
+    private setupInputTouchHandling(input: HTMLInputElement | HTMLTextAreaElement): void {
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isAndroid = /Android/.test(navigator.userAgent);
+        
+        // Prevent input from losing focus on touch events
+        input.addEventListener('touchstart', (e) => {
+            e.stopPropagation();
+        });
+        
+        input.addEventListener('touchend', (e) => {
+            e.stopPropagation();
+            // iOS-specific: ensure input retains focus
+            if (isIOS && input !== document.activeElement) {
+                setTimeout(() => input.focus(), 50);
+            }
+        });
+        
+        // Handle paste operations with better mobile support
+        input.addEventListener('paste', (e) => {
+            e.stopPropagation();
+            // Allow default paste behavior but ensure proper resizing
+            setTimeout(() => {
+                if (input instanceof HTMLTextAreaElement) {
+                    this.autoResizeTextarea(input);
+                } else {
+                    this.autoResizeInput(input);
+                }
+            }, 100);
+        });
+        
+        // Improved selection handling for mobile
+        if (isIOS || isAndroid) {
+            input.addEventListener('selectionchange', () => {
+                // Prevent selection from being lost on mobile
+                if (input === document.activeElement) {
+                    input.style.userSelect = 'text';
+                    input.style.webkitUserSelect = 'text';
+                }
+            });
+        }
     }
 
-    private handleVirtualKeyboard(isShowing: boolean): void {
+    private handleVirtualKeyboard(isShowing: boolean, deviceType: 'mobile' | 'tablet' | 'desktop' = 'mobile'): void {
         const viewport = document.querySelector('meta[name=viewport]');
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isAndroid = /Android/.test(navigator.userAgent);
+        
         if (!viewport) return;
 
         if (isShowing) {
-            // Adjust viewport when keyboard shows
-            viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+            // Device-specific viewport adjustments
+            if (isIOS) {
+                viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover');
+            } else if (isAndroid) {
+                viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no');
+            } else {
+                viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=3.0');
+            }
             
-            // Scroll to editing cell if needed
+            // Add keyboard-open class for CSS adjustments
+            document.body.classList.add('keyboard-open');
+            
+            // Scroll to editing cell with device-specific timing
             if (this.currentEditor) {
+                const scrollDelay = isIOS ? 500 : isAndroid ? 300 : 100;
                 setTimeout(() => {
-                    this.currentEditor?.scrollIntoView({ 
-                        behavior: 'smooth', 
-                        block: 'center' 
-                    });
-                }, 300);
+                    if (this.currentEditor) {
+                        this.currentEditor.scrollIntoView({ 
+                            behavior: 'smooth', 
+                            block: deviceType === 'mobile' ? 'start' : 'center',
+                            inline: 'nearest'
+                        });
+                    }
+                }, scrollDelay);
+                
+                // Additional iOS-specific handling
+                if (isIOS) {
+                    // Prevent body scroll when keyboard is open
+                    document.body.style.position = 'fixed';
+                    document.body.style.width = '100%';
+                }
             }
         } else {
             // Restore normal viewport
-            viewport.setAttribute('content', 'width=device-width, initial-scale=1.0');
+            if (isIOS) {
+                viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
+                // Restore body scroll
+                document.body.style.position = '';
+                document.body.style.width = '';
+            } else {
+                viewport.setAttribute('content', 'width=device-width, initial-scale=1.0');
+            }
+            
+            // Remove keyboard-open class
+            document.body.classList.remove('keyboard-open');
         }
     }
 
     private autoResizeInput(input: HTMLInputElement): void {
-        // Create temporary span to measure text width
-        const span = document.createElement('span');
-        span.style.visibility = 'hidden';
-        span.style.position = 'absolute';
-        span.style.fontSize = window.getComputedStyle(input).fontSize;
-        span.style.fontFamily = window.getComputedStyle(input).fontFamily;
-        span.textContent = input.value || input.placeholder || '';
+        const deviceType = this.detectDeviceType();
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
         
-        document.body.appendChild(span);
-        const textWidth = span.offsetWidth;
-        document.body.removeChild(span);
-        
-        // Set input width with padding
-        input.style.width = Math.max(textWidth + 20, 60) + 'px';
+        try {
+            // Create temporary span to measure text width
+            const span = document.createElement('span');
+            span.style.visibility = 'hidden';
+            span.style.position = 'absolute';
+            span.style.whiteSpace = 'pre';
+            span.style.fontSize = window.getComputedStyle(input).fontSize;
+            span.style.fontFamily = window.getComputedStyle(input).fontFamily;
+            span.style.fontWeight = window.getComputedStyle(input).fontWeight;
+            span.textContent = input.value || input.placeholder || 'Placeholder';
+            
+            document.body.appendChild(span);
+            const textWidth = span.offsetWidth;
+            document.body.removeChild(span);
+            
+            // Device-specific width calculations
+            const minWidth = deviceType === 'mobile' ? 80 : 60;
+            const maxWidth = deviceType === 'mobile' ? 
+                Math.min(window.innerWidth * 0.9, 300) : 
+                Math.min(window.innerWidth * 0.7, 400);
+            
+            const padding = isIOS ? 24 : 20;
+            const calculatedWidth = Math.max(textWidth + padding, minWidth);
+            
+            input.style.width = Math.min(calculatedWidth, maxWidth) + 'px';
+            
+            // Ensure input stays within viewport
+            if (input.getBoundingClientRect().right > window.innerWidth) {
+                const rect = input.getBoundingClientRect();
+                const overflow = rect.right - window.innerWidth + 10;
+                input.style.width = Math.max(calculatedWidth - overflow, minWidth) + 'px';
+            }
+        } catch (error) {
+            // Fallback if measurement fails
+            console.warn('Auto-resize failed, using fallback:', error);
+            const fallbackWidth = deviceType === 'mobile' ? 120 : 80;
+            input.style.width = fallbackWidth + 'px';
+        }
     }
 
     private autoResizeTextarea(textarea: HTMLTextAreaElement): void {
-        // Reset height to auto to get the correct scrollHeight
-        textarea.style.height = 'auto';
+        const deviceType = this.detectDeviceType();
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
         
-        // Set height based on scrollHeight
-        const newHeight = Math.max(textarea.scrollHeight, 60);
-        textarea.style.height = newHeight + 'px';
-        
-        // Also adjust width if needed
-        const maxWidth = Math.min(window.innerWidth * 0.8, 400);
-        if (textarea.scrollWidth > textarea.clientWidth) {
-            textarea.style.width = Math.min(textarea.scrollWidth + 20, maxWidth) + 'px';
+        try {
+            // Reset height to auto to get the correct scrollHeight
+            textarea.style.height = 'auto';
+            
+            // Device-specific height calculations
+            const minHeight = deviceType === 'mobile' ? 80 : 60;
+            const maxHeight = deviceType === 'mobile' ? 
+                Math.min(window.innerHeight * 0.4, 250) : 
+                Math.min(window.innerHeight * 0.5, 300);
+            
+            const scrollHeight = textarea.scrollHeight;
+            const newHeight = Math.max(Math.min(scrollHeight, maxHeight), minHeight);
+            
+            textarea.style.height = newHeight + 'px';
+            
+            // Adjust width with device-specific constraints
+            const maxWidth = deviceType === 'mobile' ? 
+                Math.min(window.innerWidth * 0.9, 350) : 
+                Math.min(window.innerWidth * 0.8, 450);
+                
+            const minWidth = deviceType === 'mobile' ? 200 : 150;
+            
+            if (textarea.scrollWidth > textarea.clientWidth) {
+                const padding = isIOS ? 24 : 20;
+                const newWidth = Math.min(Math.max(textarea.scrollWidth + padding, minWidth), maxWidth);
+                textarea.style.width = newWidth + 'px';
+            }
+            
+            // Ensure textarea stays within viewport bounds
+            const rect = textarea.getBoundingClientRect();
+            if (rect.bottom > window.innerHeight) {
+                textarea.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+            
+            if (rect.right > window.innerWidth) {
+                const overflow = rect.right - window.innerWidth + 10;
+                const currentWidth = parseInt(textarea.style.width) || textarea.offsetWidth;
+                textarea.style.width = Math.max(currentWidth - overflow, minWidth) + 'px';
+            }
+        } catch (error) {
+            // Fallback if resize fails
+            console.warn('Textarea auto-resize failed, using fallback:', error);
+            textarea.style.height = (deviceType === 'mobile' ? 100 : 80) + 'px';
+            textarea.style.width = (deviceType === 'mobile' ? 250 : 200) + 'px';
         }
     }
 
     private setupCellTouchHandlers(cellEl: HTMLElement, sheetIndex: number, row: number, col: number): void {
         let tapStartTime = 0;
+        let preventClick = false;
+        const deviceType = this.detectDeviceType();
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+        
+        // Device-specific touch thresholds
+        const moveThreshold = deviceType === 'mobile' ? 15 : 10;
+        const tapThreshold = isIOS ? 250 : 200;
         
         cellEl.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent default to avoid double events
             tapStartTime = Date.now();
+            preventClick = false;
+            
             this.touchStartPos = {
                 x: e.touches[0].clientX,
                 y: e.touches[0].clientY
             };
             this.isLongPress = false;
             
-            // Start long press timer
+            // Start long press timer with device-specific delay
+            const longPressDelay = deviceType === 'mobile' ? 600 : this.longPressDelay;
             this.longPressTimer = window.setTimeout(() => {
                 this.isLongPress = true;
                 this.handleLongPress(cellEl, sheetIndex, row, col);
                 this.triggerHapticFeedback();
-            }, this.longPressDelay);
-        });
+                preventClick = true;
+            }, longPressDelay);
+        }, { passive: false });
 
         cellEl.addEventListener('touchmove', (e) => {
             if (!this.touchStartPos) return;
@@ -571,32 +762,50 @@ export class SheetView extends TextFileView {
             const deltaY = Math.abs(touch.clientY - this.touchStartPos.y);
             
             // Cancel long press if moved too much
-            if (deltaX > 10 || deltaY > 10) {
+            if (deltaX > moveThreshold || deltaY > moveThreshold) {
                 this.clearLongPressTimer();
+                preventClick = true;
             }
         });
 
         cellEl.addEventListener('touchend', (e) => {
+            e.preventDefault(); // Prevent ghost clicks
             this.clearLongPressTimer();
             
-            if (!this.isLongPress && this.touchStartPos) {
+            if (!this.isLongPress && !preventClick && this.touchStartPos) {
                 const tapDuration = Date.now() - tapStartTime;
                 
-                if (tapDuration < 200) { // Quick tap
-                    this.startCellEdit(cellEl, sheetIndex, row, col);
-                    this.triggerHapticFeedback('light');
+                if (tapDuration < tapThreshold) { // Quick tap
+                    // Use timeout to ensure stable editing initiation
+                    setTimeout(() => {
+                        this.startCellEdit(cellEl, sheetIndex, row, col);
+                        this.triggerHapticFeedback('light');
+                    }, 50);
                 }
             }
             
             this.touchStartPos = null;
-        });
+            
+            // Reset click prevention after a delay
+            setTimeout(() => {
+                preventClick = false;
+            }, 300);
+        }, { passive: false });
 
-        // Also handle mouse events for desktop compatibility
+        // Handle mouse events for desktop compatibility (but prevent if touch was used)
         cellEl.addEventListener('click', (e) => {
-            if (!('ontouchstart' in window)) {
+            if (!('ontouchstart' in window) && !preventClick) {
                 this.startCellEdit(cellEl, sheetIndex, row, col);
             }
         });
+        
+        // Additional iOS-specific handling
+        if (isIOS) {
+            cellEl.addEventListener('touchcancel', () => {
+                this.clearLongPressTimer();
+                this.touchStartPos = null;
+            });
+        }
     }
 
     private setupViewModeTouchHandlers(cellEl: HTMLElement, sheetIndex: number, row: number, col: number): void {
@@ -653,16 +862,31 @@ export class SheetView extends TextFileView {
         const menuItems = [
             { label: 'Edit', action: () => this.toggleEditModeAndEdit(cellEl, cellInfo), shortcut: 'F2' },
             { label: isLongText ? 'Edit as Text' : 'Edit as Multi-line', action: () => this.editCellWithType(cellEl, cellInfo, isLongText ? 'text' : 'multiline') },
+            { label: '---', action: () => {}, shortcut: '' }, // Separator
+            { label: 'Format Cell', action: () => this.showFormattingDialog(cellInfo), shortcut: 'Ctrl+1' },
+            { label: 'Bold', action: () => this.toggleCellFormat(cellInfo, 'bold'), shortcut: 'Ctrl+B' },
+            { label: 'Italic', action: () => this.toggleCellFormat(cellInfo, 'italic'), shortcut: 'Ctrl+I' },
+            { label: 'Clear Format', action: () => this.clearCellFormat(cellInfo), shortcut: '' },
+            { label: '---', action: () => {}, shortcut: '' }, // Separator
             { label: 'Copy', action: () => this.copyCellValue(cellInfo.value), shortcut: 'Ctrl+C' },
             { label: 'Paste', action: () => this.pasteCellValue(cellInfo), shortcut: 'Ctrl+V' },
+            { label: 'Copy Format', action: () => this.copyCellFormat(cellInfo), shortcut: '' },
+            { label: 'Paste Format', action: () => this.pasteCellFormat(cellInfo), shortcut: '' },
+            { label: '---', action: () => {}, shortcut: '' }, // Separator
             { label: 'Clear Cell', action: () => this.clearCell(cellInfo), shortcut: 'Del' },
             { label: 'Delete Row', action: () => this.deleteRow(cellInfo), shortcut: 'Ctrl+Shift+-' },
             { label: 'Delete Column', action: () => this.deleteColumn(cellInfo), shortcut: 'Ctrl+Alt+-' },
+            { label: '---', action: () => {}, shortcut: '' }, // Separator
             { label: autoSaveEnabled ? 'Disable Auto-save' : 'Enable Auto-save', action: () => this.toggleAutoSave() },
             { label: 'Cancel', action: () => menu.remove(), shortcut: 'Esc' }
         ];
 
         menuItems.forEach(item => {
+            if (item.label === '---') {
+                menu.createEl('div', { cls: 'sheet-context-menu-separator' });
+                return;
+            }
+            
             const button = menu.createEl('button', {
                 cls: 'sheet-context-menu-item'
             });
@@ -1023,6 +1247,29 @@ export class SheetView extends TextFileView {
                     e.preventDefault();
                     this.toggleEditMode();
                     break;
+                case 'b':
+                    e.preventDefault();
+                    this.applyQuickFormat('bold');
+                    break;
+                case 'i':
+                    e.preventDefault();
+                    this.applyQuickFormat('italic');
+                    break;
+                case 'u':
+                    e.preventDefault();
+                    this.applyQuickFormat('underline');
+                    break;
+                case '1':
+                    e.preventDefault();
+                    if (this.selectedCell) {
+                        this.showFormattingDialog({
+                            sheetIndex: this.selectedCell.sheetIndex,
+                            row: this.selectedCell.row,
+                            col: this.selectedCell.col,
+                            value: this.getCellDisplayValue(this.selectedCell)
+                        });
+                    }
+                    break;
                 default:
                     return; // Don't prevent default for unhandled shortcuts
             }
@@ -1306,29 +1553,55 @@ export class SheetView extends TextFileView {
         const sheet = this.sheetData[sheetIndex];
 
         this.hideFormulaHelp();
+        
+        // Clean up mobile-specific event listeners
+        this.cleanupInputEventListeners(this.currentEditor);
 
         try {
             const success = this.dataManager.updateCell(sheet.id, row, col, newValue);
             if (success) {
                 this.updateDisplayText();
+                this.triggerHapticFeedback('light');
             } else {
                 this.showToast('Invalid formula or value');
                 this.showFallbackForUnsupportedOperation('cell update', newValue);
+                this.triggerHapticFeedback('heavy');
             }
         } catch (error) {
             this.showToast('Error: ' + (error instanceof Error ? error.message : 'Unknown error'));
             this.showFallbackForUnsupportedOperation('cell update', newValue, error);
+            this.triggerHapticFeedback('heavy');
         }
 
         this.currentEditor = null;
         this.editingCell = null;
+        
+        // Restore viewport and keyboard state
+        this.handleVirtualKeyboard(false);
+        
         this.render();
+    }
+    
+    private cleanupInputEventListeners(input: HTMLInputElement | HTMLTextAreaElement): void {
+        // Remove mobile-specific event listeners to prevent memory leaks
+        const newInput = input.cloneNode(true) as HTMLInputElement | HTMLTextAreaElement;
+        input.parentNode?.replaceChild(newInput, input);
     }
 
     private cancelCellEdit(): void {
         this.hideFormulaHelp();
+        
+        // Clean up mobile-specific event listeners
+        if (this.currentEditor) {
+            this.cleanupInputEventListeners(this.currentEditor);
+        }
+        
         this.currentEditor = null;
         this.editingCell = null;
+        
+        // Restore viewport and keyboard state
+        this.handleVirtualKeyboard(false);
+        
         this.render();
     }
 
@@ -1436,6 +1709,344 @@ export class SheetView extends TextFileView {
             } finally {
                 this.hideLoadingState();
             }
+        }
+    }
+
+    // Cell formatting methods
+    private showFormattingDialog(cellInfo: any): void {
+        const sheet = this.sheetData[cellInfo.sheetIndex];
+        const currentFormat = this.dataManager?.getCellFormat(sheet.id, cellInfo.row, cellInfo.col);
+        
+        // Remove existing dialog
+        const existing = document.querySelector('.sheet-format-dialog');
+        if (existing) existing.remove();
+
+        const dialog = document.createElement('div');
+        dialog.className = 'sheet-format-dialog';
+        
+        dialog.innerHTML = `
+            <div class="sheet-format-dialog-content">
+                <h3>Format Cell</h3>
+                <div class="sheet-format-tabs">
+                    <button class="sheet-format-tab active" data-tab="quick">Quick</button>
+                    <button class="sheet-format-tab" data-tab="font">Font</button>
+                    <button class="sheet-format-tab" data-tab="number">Number</button>
+                    <button class="sheet-format-tab" data-tab="border">Border</button>
+                </div>
+                <div class="sheet-format-content">
+                    <div class="sheet-format-panel active" data-panel="quick">
+                        ${this.renderQuickFormatPanel(currentFormat)}
+                    </div>
+                    <div class="sheet-format-panel" data-panel="font">
+                        ${this.renderFontPanel(currentFormat)}
+                    </div>
+                    <div class="sheet-format-panel" data-panel="number">
+                        ${this.renderNumberPanel(currentFormat)}
+                    </div>
+                    <div class="sheet-format-panel" data-panel="border">
+                        ${this.renderBorderPanel(currentFormat)}
+                    </div>
+                </div>
+                <div class="sheet-format-actions">
+                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="cancel">Cancel</button>
+                    <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="apply">Apply</button>
+                </div>
+            </div>
+        `;
+
+        this.setupFormatDialogHandlers(dialog, cellInfo);
+        document.body.appendChild(dialog);
+    }
+
+    private renderQuickFormatPanel(currentFormat: CellFormat | null): string {
+        const presets = FormatManager.getMobileQuickFormats();
+        return `
+            <div class="sheet-format-presets">
+                ${presets.map(preset => `
+                    <button class="sheet-format-preset" data-preset="${preset.id}">
+                        <div class="sheet-format-preset-preview" style="${SheetParser.generateCellStyle(preset.format)}">
+                            ${preset.name}
+                        </div>
+                        <span class="sheet-format-preset-name">${preset.name}</span>
+                    </button>
+                `).join('')}
+            </div>
+            <div class="sheet-format-colors">
+                <label>Colors:</label>
+                <div class="sheet-color-palette">
+                    ${FormatManager.getColorPalette().map(color => `
+                        <button class="sheet-color-btn" data-color="${color}" data-type="text" style="background-color: ${color}" title="Text: ${color}"></button>
+                    `).join('')}
+                </div>
+                <div class="sheet-color-palette">
+                    ${FormatManager.getColorPalette().map(color => `
+                        <button class="sheet-color-btn" data-color="${color}" data-type="background" style="background-color: ${color}; border: 2px solid #fff; box-shadow: 0 0 0 1px #ccc" title="Background: ${color}"></button>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    private renderFontPanel(currentFormat: CellFormat | null): string {
+        return `
+            <div class="sheet-format-section">
+                <label>Font Family:</label>
+                <select class="sheet-format-select" data-property="fontFamily">
+                    <option value="">Default</option>
+                    <option value="Arial, sans-serif" ${currentFormat?.fontFamily === 'Arial, sans-serif' ? 'selected' : ''}>Arial</option>
+                    <option value="'Times New Roman', serif" ${currentFormat?.fontFamily === "'Times New Roman', serif" ? 'selected' : ''}>Times New Roman</option>
+                    <option value="'Courier New', monospace" ${currentFormat?.fontFamily === "'Courier New', monospace" ? 'selected' : ''}>Courier New</option>
+                    <option value="Helvetica, sans-serif" ${currentFormat?.fontFamily === 'Helvetica, sans-serif' ? 'selected' : ''}>Helvetica</option>
+                </select>
+            </div>
+            <div class="sheet-format-section">
+                <label>Font Size:</label>
+                <input type="number" class="sheet-format-input" data-property="fontSize" value="${currentFormat?.fontSize || 14}" min="8" max="72">
+            </div>
+            <div class="sheet-format-section">
+                <label>Style:</label>
+                <div class="sheet-format-buttons">
+                    <button class="sheet-format-toggle ${currentFormat?.fontWeight === 'bold' ? 'active' : ''}" data-property="fontWeight" data-value="bold">B</button>
+                    <button class="sheet-format-toggle ${currentFormat?.fontStyle === 'italic' ? 'active' : ''}" data-property="fontStyle" data-value="italic">I</button>
+                    <button class="sheet-format-toggle ${currentFormat?.textDecoration === 'underline' ? 'active' : ''}" data-property="textDecoration" data-value="underline">U</button>
+                </div>
+            </div>
+            <div class="sheet-format-section">
+                <label>Alignment:</label>
+                <div class="sheet-format-buttons">
+                    <button class="sheet-format-toggle ${currentFormat?.textAlign === 'left' ? 'active' : ''}" data-property="textAlign" data-value="left">⬅</button>
+                    <button class="sheet-format-toggle ${currentFormat?.textAlign === 'center' ? 'active' : ''}" data-property="textAlign" data-value="center">⬅➡</button>
+                    <button class="sheet-format-toggle ${currentFormat?.textAlign === 'right' ? 'active' : ''}" data-property="textAlign" data-value="right">➡</button>
+                </div>
+            </div>
+        `;
+    }
+
+    private renderNumberPanel(currentFormat: CellFormat | null): string {
+        const numberFormat = currentFormat?.numberFormat;
+        return `
+            <div class="sheet-format-section">
+                <label>Format Type:</label>
+                <select class="sheet-format-select" data-property="numberType">
+                    <option value="general" ${numberFormat?.type === 'general' ? 'selected' : ''}>General</option>
+                    <option value="number" ${numberFormat?.type === 'number' ? 'selected' : ''}>Number</option>
+                    <option value="currency" ${numberFormat?.type === 'currency' ? 'selected' : ''}>Currency</option>
+                    <option value="percentage" ${numberFormat?.type === 'percentage' ? 'selected' : ''}>Percentage</option>
+                    <option value="date" ${numberFormat?.type === 'date' ? 'selected' : ''}>Date</option>
+                    <option value="time" ${numberFormat?.type === 'time' ? 'selected' : ''}>Time</option>
+                    <option value="text" ${numberFormat?.type === 'text' ? 'selected' : ''}>Text</option>
+                </select>
+            </div>
+            <div class="sheet-format-section">
+                <label>Decimal Places:</label>
+                <input type="number" class="sheet-format-input" data-property="decimalPlaces" value="${numberFormat?.decimalPlaces || 2}" min="0" max="10">
+            </div>
+            <div class="sheet-format-section">
+                <label>Currency Symbol:</label>
+                <input type="text" class="sheet-format-input" data-property="currencySymbol" value="${numberFormat?.currencySymbol || '$'}" maxlength="3">
+            </div>
+            <div class="sheet-format-section">
+                <label>
+                    <input type="checkbox" data-property="thousandsSeparator" ${numberFormat?.thousandsSeparator ? 'checked' : ''}>
+                    Use thousands separator
+                </label>
+            </div>
+        `;
+    }
+
+    private renderBorderPanel(currentFormat: CellFormat | null): string {
+        return `
+            <div class="sheet-format-section">
+                <label>Border Style:</label>
+                <select class="sheet-format-select" data-property="borderStyle">
+                    <option value="none">None</option>
+                    <option value="solid">Solid</option>
+                    <option value="dashed">Dashed</option>
+                    <option value="dotted">Dotted</option>
+                </select>
+            </div>
+            <div class="sheet-format-section">
+                <label>Border Width:</label>
+                <input type="number" class="sheet-format-input" data-property="borderWidth" value="1" min="1" max="5">
+            </div>
+            <div class="sheet-format-section">
+                <label>Border Color:</label>
+                <input type="color" class="sheet-format-input" data-property="borderColor" value="#000000">
+            </div>
+            <div class="sheet-format-section">
+                <label>Apply to:</label>
+                <div class="sheet-format-buttons">
+                    <button class="sheet-format-toggle" data-border="all">All</button>
+                    <button class="sheet-format-toggle" data-border="top">Top</button>
+                    <button class="sheet-format-toggle" data-border="right">Right</button>
+                    <button class="sheet-format-toggle" data-border="bottom">Bottom</button>
+                    <button class="sheet-format-toggle" data-border="left">Left</button>
+                </div>
+            </div>
+        `;
+    }
+
+    private setupFormatDialogHandlers(dialog: HTMLElement, cellInfo: any): void {
+        let currentFormat: CellFormat = {};
+        
+        // Tab switching
+        dialog.addEventListener('click', (e) => {
+            const target = e.target as HTMLElement;
+            
+            if (target.classList.contains('sheet-format-tab')) {
+                const tabName = target.getAttribute('data-tab');
+                if (tabName) {
+                    // Switch tabs
+                    dialog.querySelectorAll('.sheet-format-tab').forEach(tab => tab.classList.remove('active'));
+                    dialog.querySelectorAll('.sheet-format-panel').forEach(panel => panel.classList.remove('active'));
+                    
+                    target.classList.add('active');
+                    const panel = dialog.querySelector(`[data-panel="${tabName}"]`);
+                    if (panel) panel.classList.add('active');
+                }
+            }
+            
+            // Preset selection
+            if (target.classList.contains('sheet-format-preset') || target.closest('.sheet-format-preset')) {
+                const presetBtn = target.closest('.sheet-format-preset') as HTMLElement;
+                const presetId = presetBtn.getAttribute('data-preset');
+                if (presetId) {
+                    const preset = FormatManager.getPreset(presetId);
+                    if (preset) {
+                        currentFormat = { ...preset.format };
+                        this.highlightSelectedPreset(dialog, presetBtn);
+                    }
+                }
+            }
+            
+            // Color selection
+            if (target.classList.contains('sheet-color-btn')) {
+                const color = target.getAttribute('data-color');
+                const type = target.getAttribute('data-type');
+                if (color && type) {
+                    if (type === 'text') {
+                        currentFormat.color = color;
+                    } else if (type === 'background') {
+                        currentFormat.backgroundColor = color;
+                    }
+                }
+            }
+            
+            // Format toggles
+            if (target.classList.contains('sheet-format-toggle')) {
+                const property = target.getAttribute('data-property');
+                const value = target.getAttribute('data-value');
+                
+                if (property && value) {
+                    target.classList.toggle('active');
+                    if (target.classList.contains('active')) {
+                        (currentFormat as any)[property] = value;
+                    } else {
+                        delete (currentFormat as any)[property];
+                    }
+                }
+            }
+            
+            // Action buttons
+            if (target.getAttribute('data-action') === 'apply') {
+                this.applyCellFormat(cellInfo, currentFormat);
+                dialog.remove();
+            } else if (target.getAttribute('data-action') === 'cancel') {
+                dialog.remove();
+            }
+        });
+        
+        // Input changes
+        dialog.addEventListener('input', (e) => {
+            const target = e.target as HTMLInputElement | HTMLSelectElement;
+            const property = target.getAttribute('data-property');
+            
+            if (property) {
+                if (target.type === 'checkbox') {
+                    const checkbox = target as HTMLInputElement;
+                    if (property === 'thousandsSeparator') {
+                        if (!currentFormat.numberFormat) currentFormat.numberFormat = { type: 'number' };
+                        currentFormat.numberFormat.thousandsSeparator = checkbox.checked;
+                    }
+                } else {
+                    const value = target.value;
+                    if (property === 'fontSize') {
+                        currentFormat.fontSize = parseInt(value) || 14;
+                    } else if (property === 'numberType') {
+                        if (!currentFormat.numberFormat) currentFormat.numberFormat = { type: 'general' };
+                        currentFormat.numberFormat.type = value as any;
+                    } else if (property === 'decimalPlaces') {
+                        if (!currentFormat.numberFormat) currentFormat.numberFormat = { type: 'number' };
+                        currentFormat.numberFormat.decimalPlaces = parseInt(value) || 2;
+                    } else if (property === 'currencySymbol') {
+                        if (!currentFormat.numberFormat) currentFormat.numberFormat = { type: 'currency' };
+                        currentFormat.numberFormat.currencySymbol = value;
+                    } else {
+                        (currentFormat as any)[property] = value;
+                    }
+                }
+            }
+        });
+    }
+
+    private highlightSelectedPreset(dialog: HTMLElement, selectedBtn: HTMLElement): void {
+        dialog.querySelectorAll('.sheet-format-preset').forEach(btn => btn.classList.remove('selected'));
+        selectedBtn.classList.add('selected');
+    }
+
+    private applyCellFormat(cellInfo: any, format: CellFormat): void {
+        if (this.dataManager) {
+            const sheet = this.sheetData[cellInfo.sheetIndex];
+            this.dataManager.formatCell(sheet.id, cellInfo.row, cellInfo.col, format);
+            this.render();
+            this.showToast('Format applied');
+        }
+    }
+
+    private toggleCellFormat(cellInfo: any, formatType: 'bold' | 'italic'): void {
+        if (!this.dataManager) return;
+        
+        const sheet = this.sheetData[cellInfo.sheetIndex];
+        const currentFormat = this.dataManager.getCellFormat(sheet.id, cellInfo.row, cellInfo.col) || {};
+        
+        let newFormat: CellFormat = {};
+        
+        if (formatType === 'bold') {
+            newFormat.fontWeight = currentFormat.fontWeight === 'bold' ? 'normal' : 'bold';
+        } else if (formatType === 'italic') {
+            newFormat.fontStyle = currentFormat.fontStyle === 'italic' ? 'normal' : 'italic';
+        }
+        
+        this.dataManager.formatCell(sheet.id, cellInfo.row, cellInfo.col, newFormat);
+        this.render();
+        this.showToast(`${formatType} ${newFormat.fontWeight === 'bold' || newFormat.fontStyle === 'italic' ? 'applied' : 'removed'}`);
+    }
+
+    private clearCellFormat(cellInfo: any): void {
+        if (this.dataManager) {
+            const sheet = this.sheetData[cellInfo.sheetIndex];
+            this.dataManager.clearCellFormat(sheet.id, cellInfo.row, cellInfo.col);
+            this.render();
+            this.showToast('Format cleared');
+        }
+    }
+
+    private copyCellFormat(cellInfo: any): void {
+        if (this.dataManager) {
+            const sheet = this.sheetData[cellInfo.sheetIndex];
+            this.copiedFormat = this.dataManager.getCellFormat(sheet.id, cellInfo.row, cellInfo.col);
+            this.showToast('Format copied');
+        }
+    }
+
+    private pasteCellFormat(cellInfo: any): void {
+        if (this.dataManager && this.copiedFormat) {
+            const sheet = this.sheetData[cellInfo.sheetIndex];
+            this.dataManager.formatCell(sheet.id, cellInfo.row, cellInfo.col, this.copiedFormat);
+            this.render();
+            this.showToast('Format pasted');
+        } else {
+            this.showToast('No format to paste');
         }
     }
 
@@ -1968,5 +2579,147 @@ export class SheetView extends TextFileView {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
         return Math.round(bytes / (1024 * 1024)) + ' MB';
+    }
+
+    private renderFormattingToolbar(toolbar: HTMLElement): void {
+        const formatSeparator = toolbar.createEl('div', { cls: 'sheet-toolbar-separator' });
+        
+        // Bold button
+        const boldBtn = toolbar.createEl('button', {
+            text: 'B',
+            cls: 'sheet-format-btn sheet-format-bold',
+            title: 'Bold (Ctrl+B)'
+        });
+        boldBtn.addEventListener('click', () => this.applyQuickFormat('bold'));
+        
+        // Italic button
+        const italicBtn = toolbar.createEl('button', {
+            text: 'I',
+            cls: 'sheet-format-btn sheet-format-italic',
+            title: 'Italic (Ctrl+I)'
+        });
+        italicBtn.addEventListener('click', () => this.applyQuickFormat('italic'));
+        
+        // Underline button
+        const underlineBtn = toolbar.createEl('button', {
+            text: 'U',
+            cls: 'sheet-format-btn sheet-format-underline',
+            title: 'Underline (Ctrl+U)'
+        });
+        underlineBtn.addEventListener('click', () => this.applyQuickFormat('underline'));
+        
+        // Alignment buttons
+        const alignLeftBtn = toolbar.createEl('button', {
+            text: '⬅',
+            cls: 'sheet-format-btn sheet-format-align-left',
+            title: 'Align Left'
+        });
+        alignLeftBtn.addEventListener('click', () => this.applyQuickFormat('align-left'));
+        
+        const alignCenterBtn = toolbar.createEl('button', {
+            text: '⬌',
+            cls: 'sheet-format-btn sheet-format-align-center',
+            title: 'Align Center'
+        });
+        alignCenterBtn.addEventListener('click', () => this.applyQuickFormat('align-center'));
+        
+        const alignRightBtn = toolbar.createEl('button', {
+            text: '➡',
+            cls: 'sheet-format-btn sheet-format-align-right',
+            title: 'Align Right'
+        });
+        alignRightBtn.addEventListener('click', () => this.applyQuickFormat('align-right'));
+        
+        // Currency format
+        const currencyBtn = toolbar.createEl('button', {
+            text: '$',
+            cls: 'sheet-format-btn sheet-format-currency',
+            title: 'Currency Format'
+        });
+        currencyBtn.addEventListener('click', () => this.applyQuickFormat('currency'));
+        
+        // Percentage format
+        const percentBtn = toolbar.createEl('button', {
+            text: '%',
+            cls: 'sheet-format-btn sheet-format-percent',
+            title: 'Percentage Format'
+        });
+        percentBtn.addEventListener('click', () => this.applyQuickFormat('percentage'));
+        
+        // Format dialog button
+        const formatBtn = toolbar.createEl('button', {
+            text: '🎨',
+            cls: 'sheet-format-btn sheet-format-dialog',
+            title: 'More Formatting Options'
+        });
+        formatBtn.addEventListener('click', () => {
+            if (this.selectedCell) {
+                this.showFormattingDialog({
+                    sheetIndex: this.selectedCell.sheetIndex,
+                    row: this.selectedCell.row,
+                    col: this.selectedCell.col,
+                    value: this.getCellDisplayValue(this.selectedCell)
+                });
+            } else {
+                this.showToast('Select a cell to format');
+            }
+        });
+    }
+
+    private applyQuickFormat(formatType: string): void {
+        if (!this.selectedCell || !this.dataManager) {
+            this.showToast('Select a cell to format');
+            return;
+        }
+        
+        const sheet = this.sheetData[this.selectedCell.sheetIndex];
+        const currentFormat = this.dataManager.getCellFormat(sheet.id, this.selectedCell.row, this.selectedCell.col) || {};
+        let newFormat: CellFormat = {};
+        
+        switch (formatType) {
+            case 'bold':
+                newFormat = FormatManager.createBoldFormat();
+                if (currentFormat.fontWeight === 'bold') {
+                    newFormat.fontWeight = 'normal';
+                }
+                break;
+            case 'italic':
+                newFormat = FormatManager.createItalicFormat();
+                if (currentFormat.fontStyle === 'italic') {
+                    newFormat.fontStyle = 'normal';
+                }
+                break;
+            case 'underline':
+                newFormat = FormatManager.createUnderlineFormat();
+                if (currentFormat.textDecoration === 'underline') {
+                    newFormat.textDecoration = 'none';
+                }
+                break;
+            case 'align-left':
+                newFormat = FormatManager.createAlignmentFormat('left');
+                break;
+            case 'align-center':
+                newFormat = FormatManager.createAlignmentFormat('center');
+                break;
+            case 'align-right':
+                newFormat = FormatManager.createAlignmentFormat('right');
+                break;
+            case 'currency':
+                newFormat = FormatManager.createCurrencyFormat();
+                break;
+            case 'percentage':
+                newFormat = FormatManager.createPercentageFormat();
+                break;
+        }
+        
+        this.dataManager.formatCell(sheet.id, this.selectedCell.row, this.selectedCell.col, newFormat);
+        this.render();
+        this.showToast(`${formatType} format applied`);
+    }
+
+    private getCellDisplayValue(cellInfo: { sheetIndex: number; row: number; col: number }): string {
+        const sheet = this.sheetData[cellInfo.sheetIndex];
+        const cell = SheetParser.getCellAt(sheet, cellInfo.row, cellInfo.col);
+        return cell ? SheetParser.getFormattedCellValue(cell.v) : '';
     }
 }

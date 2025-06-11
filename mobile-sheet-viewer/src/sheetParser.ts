@@ -4,6 +4,64 @@ export interface SheetCellValue {
     f?: string;
     ct?: { fa: string; t: string };
     calculated?: boolean; // Indicates if this is a calculated value from a formula
+    s?: CellFormat; // Cell formatting
+}
+
+export interface CellFormat {
+    // Font properties
+    fontFamily?: string;
+    fontSize?: number;
+    fontWeight?: 'normal' | 'bold' | 'bolder' | 'lighter' | number;
+    fontStyle?: 'normal' | 'italic' | 'oblique';
+    textDecoration?: 'none' | 'underline' | 'overline' | 'line-through';
+    
+    // Text properties
+    color?: string;
+    textAlign?: 'left' | 'center' | 'right' | 'justify';
+    verticalAlign?: 'top' | 'middle' | 'bottom';
+    textWrap?: boolean;
+    
+    // Background and borders
+    backgroundColor?: string;
+    border?: CellBorder;
+    
+    // Number formatting
+    numberFormat?: NumberFormat;
+    
+    // Custom styling
+    customCss?: string;
+}
+
+export interface CellBorder {
+    top?: BorderStyle;
+    right?: BorderStyle;
+    bottom?: BorderStyle;
+    left?: BorderStyle;
+    all?: BorderStyle; // Shorthand for all sides
+}
+
+export interface BorderStyle {
+    width?: number;
+    style?: 'none' | 'solid' | 'dashed' | 'dotted' | 'double';
+    color?: string;
+}
+
+export interface NumberFormat {
+    type: 'general' | 'number' | 'currency' | 'percentage' | 'date' | 'time' | 'scientific' | 'fraction' | 'text' | 'custom';
+    decimalPlaces?: number;
+    thousandsSeparator?: boolean;
+    currencySymbol?: string;
+    dateFormat?: string;
+    timeFormat?: string;
+    customFormat?: string;
+}
+
+export interface FormatPreset {
+    id: string;
+    name: string;
+    description: string;
+    format: CellFormat;
+    category: 'text' | 'number' | 'date' | 'currency' | 'highlight' | 'custom';
 }
 
 export interface CellState {
@@ -13,6 +71,9 @@ export interface CellState {
     isValid: boolean;
     validationError?: string;
     lastModified?: Date;
+    originalFormat?: CellFormat | null;
+    currentFormat?: CellFormat | null;
+    isFormatModified: boolean;
 }
 
 export interface ValidationRule {
@@ -328,8 +389,215 @@ export class SheetParser {
             currentValue,
             isModified: JSON.stringify(originalValue) !== JSON.stringify(currentValue),
             isValid: true,
-            lastModified: new Date()
+            lastModified: new Date(),
+            originalFormat: originalValue?.s || null,
+            currentFormat: currentValue?.s || null,
+            isFormatModified: JSON.stringify(originalValue?.s) !== JSON.stringify(currentValue?.s)
         };
+    }
+
+    // Formatting utility methods
+    static formatNumberValue(value: number | string, format: NumberFormat): string {
+        const numValue = typeof value === 'string' ? parseFloat(value) : value;
+        if (isNaN(numValue)) return String(value);
+
+        switch (format.type) {
+            case 'number':
+                return this.formatNumber(numValue, format.decimalPlaces || 2, format.thousandsSeparator || false);
+            case 'currency':
+                return this.formatCurrency(numValue, format.currencySymbol || '$', format.decimalPlaces || 2);
+            case 'percentage':
+                return this.formatPercentage(numValue, format.decimalPlaces || 2);
+            case 'scientific':
+                return numValue.toExponential(format.decimalPlaces || 2);
+            case 'custom':
+                return format.customFormat ? this.applyCustomFormat(numValue, format.customFormat) : String(numValue);
+            default:
+                return String(value);
+        }
+    }
+
+    static formatDateValue(value: string | number | Date, format: NumberFormat): string {
+        let date: Date;
+        
+        if (value instanceof Date) {
+            date = value;
+        } else if (typeof value === 'number') {
+            date = new Date(value);
+        } else {
+            date = new Date(value);
+        }
+
+        if (isNaN(date.getTime())) return String(value);
+
+        switch (format.type) {
+            case 'date':
+                return this.formatDate(date, format.dateFormat || 'MM/dd/yyyy');
+            case 'time':
+                return this.formatTime(date, format.timeFormat || 'HH:mm:ss');
+            default:
+                return date.toLocaleDateString();
+        }
+    }
+
+    private static formatNumber(value: number, decimalPlaces: number, useThousandsSeparator: boolean): string {
+        const formatted = value.toFixed(decimalPlaces);
+        if (!useThousandsSeparator) return formatted;
+        
+        const parts = formatted.split('.');
+        parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        return parts.join('.');
+    }
+
+    private static formatCurrency(value: number, symbol: string, decimalPlaces: number): string {
+        const formatted = this.formatNumber(Math.abs(value), decimalPlaces, true);
+        const prefix = value < 0 ? '-' : '';
+        return `${prefix}${symbol}${formatted}`;
+    }
+
+    private static formatPercentage(value: number, decimalPlaces: number): string {
+        return (value * 100).toFixed(decimalPlaces) + '%';
+    }
+
+    private static formatDate(date: Date, format: string): string {
+        const formatMap: Record<string, string> = {
+            'yyyy': date.getFullYear().toString(),
+            'yy': date.getFullYear().toString().slice(-2),
+            'MM': (date.getMonth() + 1).toString().padStart(2, '0'),
+            'M': (date.getMonth() + 1).toString(),
+            'dd': date.getDate().toString().padStart(2, '0'),
+            'd': date.getDate().toString(),
+            'EEEE': date.toLocaleDateString('en-US', { weekday: 'long' }),
+            'EEE': date.toLocaleDateString('en-US', { weekday: 'short' })
+        };
+
+        let result = format;
+        for (const [pattern, replacement] of Object.entries(formatMap)) {
+            result = result.replace(new RegExp(pattern, 'g'), replacement);
+        }
+        return result;
+    }
+
+    private static formatTime(date: Date, format: string): string {
+        const formatMap: Record<string, string> = {
+            'HH': date.getHours().toString().padStart(2, '0'),
+            'H': date.getHours().toString(),
+            'hh': (date.getHours() % 12 || 12).toString().padStart(2, '0'),
+            'h': (date.getHours() % 12 || 12).toString(),
+            'mm': date.getMinutes().toString().padStart(2, '0'),
+            'm': date.getMinutes().toString(),
+            'ss': date.getSeconds().toString().padStart(2, '0'),
+            's': date.getSeconds().toString(),
+            'a': date.getHours() >= 12 ? 'PM' : 'AM'
+        };
+
+        let result = format;
+        for (const [pattern, replacement] of Object.entries(formatMap)) {
+            result = result.replace(new RegExp(pattern, 'g'), replacement);
+        }
+        return result;
+    }
+
+    private static applyCustomFormat(value: number, format: string): string {
+        // Basic custom format support - can be extended
+        return format.replace('#', value.toString());
+    }
+
+    static getFormattedCellValue(cellValue: SheetCellValue | null | undefined): string {
+        if (!cellValue) return '';
+        
+        // First check if there's manual formatting (m property)
+        if (cellValue.m) return cellValue.m;
+        
+        // If there's a value and formatting, apply formatting
+        if (cellValue.v !== undefined && cellValue.s?.numberFormat) {
+            if (typeof cellValue.v === 'number') {
+                return this.formatNumberValue(cellValue.v, cellValue.s.numberFormat);
+            } else if (cellValue.s.numberFormat.type === 'date' || cellValue.s.numberFormat.type === 'time') {
+                return this.formatDateValue(cellValue.v, cellValue.s.numberFormat);
+            }
+        }
+        
+        // Default to string conversion
+        if (cellValue.v !== undefined) return String(cellValue.v);
+        
+        return '';
+    }
+
+    static applyCellFormat(cellValue: SheetCellValue, format: CellFormat): SheetCellValue {
+        return {
+            ...cellValue,
+            s: { ...cellValue.s, ...format }
+        };
+    }
+
+    static mergeCellFormats(baseFormat: CellFormat | undefined, newFormat: CellFormat): CellFormat {
+        return {
+            ...baseFormat,
+            ...newFormat,
+            border: {
+                ...baseFormat?.border,
+                ...newFormat.border
+            }
+        };
+    }
+
+    static generateCellStyle(format: CellFormat | undefined): string {
+        if (!format) return '';
+        
+        const styles: string[] = [];
+        
+        // Font properties
+        if (format.fontFamily) styles.push(`font-family: ${format.fontFamily}`);
+        if (format.fontSize) styles.push(`font-size: ${format.fontSize}px`);
+        if (format.fontWeight) styles.push(`font-weight: ${format.fontWeight}`);
+        if (format.fontStyle) styles.push(`font-style: ${format.fontStyle}`);
+        if (format.textDecoration) styles.push(`text-decoration: ${format.textDecoration}`);
+        
+        // Text properties
+        if (format.color) styles.push(`color: ${format.color}`);
+        if (format.textAlign) styles.push(`text-align: ${format.textAlign}`);
+        if (format.verticalAlign) styles.push(`vertical-align: ${format.verticalAlign}`);
+        if (format.textWrap !== undefined) {
+            styles.push(`white-space: ${format.textWrap ? 'pre-wrap' : 'nowrap'}`);
+        }
+        
+        // Background
+        if (format.backgroundColor) styles.push(`background-color: ${format.backgroundColor}`);
+        
+        // Borders
+        if (format.border) {
+            const borderStyles = this.generateBorderStyles(format.border);
+            styles.push(...borderStyles);
+        }
+        
+        // Custom CSS
+        if (format.customCss) styles.push(format.customCss);
+        
+        return styles.join('; ');
+    }
+
+    private static generateBorderStyles(border: CellBorder): string[] {
+        const styles: string[] = [];
+        
+        if (border.all) {
+            const borderStr = this.formatBorderStyle(border.all);
+            styles.push(`border: ${borderStr}`);
+        } else {
+            if (border.top) styles.push(`border-top: ${this.formatBorderStyle(border.top)}`);
+            if (border.right) styles.push(`border-right: ${this.formatBorderStyle(border.right)}`);
+            if (border.bottom) styles.push(`border-bottom: ${this.formatBorderStyle(border.bottom)}`);
+            if (border.left) styles.push(`border-left: ${this.formatBorderStyle(border.left)}`);
+        }
+        
+        return styles;
+    }
+
+    private static formatBorderStyle(border: BorderStyle): string {
+        const width = border.width || 1;
+        const style = border.style || 'solid';
+        const color = border.color || '#000000';
+        return `${width}px ${style} ${color}`;
     }
 }
 
@@ -462,6 +730,10 @@ export class DataManager {
     }
 
     updateCell(sheetId: string, row: number, col: number, newValue: string, validate: boolean = true): boolean {
+        return this.updateCellWithFormat(sheetId, row, col, newValue, undefined, validate);
+    }
+
+    updateCellWithFormat(sheetId: string, row: number, col: number, newValue: string, format?: CellFormat, validate: boolean = true): boolean {
         const sheet = this.sheetData.find(s => s.id === sheetId);
         if (!sheet) return false;
 
@@ -504,10 +776,18 @@ export class DataManager {
         }
 
         // Update state
-        const newCellValue = newValue.trim() === '' ? null : this.createCellValue(newValue);
+        let newCellValue = newValue.trim() === '' ? null : this.createCellValue(newValue);
+        
+        // Apply formatting if provided
+        if (format && newCellValue) {
+            newCellValue = SheetParser.applyCellFormat(newCellValue, format);
+        }
+        
         const state = this.stateManager.cellStates.get(key) || SheetParser.createCellState(oldValue, newCellValue);
         state.currentValue = newCellValue;
         state.isModified = JSON.stringify(state.originalValue) !== JSON.stringify(newCellValue);
+        state.currentFormat = newCellValue?.s || null;
+        state.isFormatModified = JSON.stringify(state.originalFormat) !== JSON.stringify(state.currentFormat);
         state.isValid = true;
         state.validationError = undefined;
         state.lastModified = new Date();
@@ -526,18 +806,21 @@ export class DataManager {
         return true;
     }
 
-    private createCellValue(value: string): SheetCellValue {
+    private createCellValue(value: string, format?: CellFormat): SheetCellValue {
         if (value.startsWith('=')) {
             return {
                 f: value,
                 m: value,
                 v: '', // Will be calculated
-                calculated: true
+                calculated: true,
+                s: format
             };
         } else {
+            const parsedValue = SheetParser.parseValue(value);
             return {
-                v: SheetParser.parseValue(value),
-                m: value
+                v: typeof parsedValue === 'boolean' ? String(parsedValue) : parsedValue,
+                m: value,
+                s: format
             };
         }
     }
@@ -797,6 +1080,131 @@ export class DataManager {
 
     getSheetData(): SheetData[] {
         return this.sheetData;
+    }
+
+    // Cell formatting methods
+    formatCell(sheetId: string, row: number, col: number, format: CellFormat): boolean {
+        const sheet = this.sheetData.find(s => s.id === sheetId);
+        if (!sheet) return false;
+
+        const key = `${sheetId}_${SheetParser.getCellKey(row, col)}`;
+        const currentCell = SheetParser.getCellAt(sheet, row, col);
+
+        // Create undo action for formatting
+        const undoAction: UndoRedoAction = {
+            type: 'cell_edit',
+            sheetId,
+            timestamp: new Date(),
+            data: {
+                row,
+                col,
+                oldValue: currentCell?.v || null,
+                newValue: currentCell?.v || null // Value doesn't change, only format
+            }
+        };
+
+        // Apply format to existing cell or create new cell
+        if (currentCell) {
+            currentCell.v.s = SheetParser.mergeCellFormats(currentCell.v.s, format);
+        } else {
+            // Create new cell with just formatting
+            const newCellValue: SheetCellValue = {
+                v: '',
+                m: '',
+                s: format
+            };
+            sheet.celldata.push({
+                r: row,
+                c: col,
+                v: newCellValue
+            });
+        }
+
+        // Update state
+        const state = this.stateManager.cellStates.get(key) || SheetParser.createCellState(null, null);
+        const updatedCell = SheetParser.getCellAt(sheet, row, col);
+        state.currentValue = updatedCell?.v || null;
+        state.currentFormat = updatedCell?.v.s || null;
+        state.isFormatModified = JSON.stringify(state.originalFormat) !== JSON.stringify(state.currentFormat);
+        state.lastModified = new Date();
+        this.stateManager.cellStates.set(key, state);
+
+        // Add to undo stack
+        this.addUndoAction(undoAction);
+        this.stateManager.isDirty = true;
+
+        // Trigger auto-save debounce
+        this.scheduleAutoSave();
+
+        return true;
+    }
+
+    clearCellFormat(sheetId: string, row: number, col: number): boolean {
+        const sheet = this.sheetData.find(s => s.id === sheetId);
+        if (!sheet) return false;
+
+        const currentCell = SheetParser.getCellAt(sheet, row, col);
+        if (!currentCell) return false;
+
+        const key = `${sheetId}_${SheetParser.getCellKey(row, col)}`;
+        
+        // Create undo action
+        const undoAction: UndoRedoAction = {
+            type: 'cell_edit',
+            sheetId,
+            timestamp: new Date(),
+            data: {
+                row,
+                col,
+                oldValue: currentCell.v,
+                newValue: { ...currentCell.v, s: undefined }
+            }
+        };
+
+        // Clear formatting
+        delete currentCell.v.s;
+
+        // Update state
+        const state = this.stateManager.cellStates.get(key);
+        if (state) {
+            state.currentFormat = null;
+            state.isFormatModified = JSON.stringify(state.originalFormat) !== JSON.stringify(null);
+            state.lastModified = new Date();
+        }
+
+        // Add to undo stack
+        this.addUndoAction(undoAction);
+        this.stateManager.isDirty = true;
+        this.scheduleAutoSave();
+
+        return true;
+    }
+
+    formatRange(sheetId: string, startRow: number, startCol: number, endRow: number, endCol: number, format: CellFormat): boolean {
+        let success = true;
+        for (let row = startRow; row <= endRow; row++) {
+            for (let col = startCol; col <= endCol; col++) {
+                if (!this.formatCell(sheetId, row, col, format)) {
+                    success = false;
+                }
+            }
+        }
+        return success;
+    }
+
+    getCellFormat(sheetId: string, row: number, col: number): CellFormat | null {
+        const sheet = this.sheetData.find(s => s.id === sheetId);
+        if (!sheet) return null;
+
+        const cell = SheetParser.getCellAt(sheet, row, col);
+        return cell?.v.s || null;
+    }
+
+    copyFormat(fromSheetId: string, fromRow: number, fromCol: number, toSheetId: string, toRow: number, toCol: number): boolean {
+        const sourceFormat = this.getCellFormat(fromSheetId, fromRow, fromCol);
+        if (!sourceFormat) return false;
+
+        return this.formatCell(toSheetId, toRow, toCol, sourceFormat);
     }
 
     // Conflict detection and resolution
