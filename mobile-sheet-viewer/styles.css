@@ -6,6 +6,93 @@
     box-sizing: border-box;
 }
 
+/* Toolbar */
+.sheet-toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.sheet-save-btn,
+.sheet-edit-toggle,
+.sheet-undo-btn,
+.sheet-redo-btn {
+    padding: 6px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+}
+
+.sheet-save-btn:hover,
+.sheet-edit-toggle:hover,
+.sheet-undo-btn:hover,
+.sheet-redo-btn:hover {
+    background: var(--background-modifier-hover);
+}
+
+.sheet-save-btn:disabled,
+.sheet-undo-btn:disabled,
+.sheet-redo-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.sheet-save-btn:disabled:hover,
+.sheet-undo-btn:disabled:hover,
+.sheet-redo-btn:disabled:hover {
+    background: var(--background-primary);
+}
+
+.sheet-modified-indicator {
+    color: var(--text-accent);
+    font-size: 11px;
+    padding: 4px 8px;
+    background: var(--background-modifier-success);
+    border-radius: 3px;
+    margin-left: auto;
+}
+
+/* Auto-save indicators */
+.sheet-auto-save-indicator {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 3px;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.sheet-auto-save-indicator.saving {
+    color: var(--text-accent);
+    background: var(--background-modifier-hover);
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+.sheet-auto-save-indicator.saved {
+    color: var(--text-success);
+    background: var(--background-modifier-success);
+}
+
+.sheet-auto-save-indicator.error {
+    color: var(--text-error);
+    background: var(--background-modifier-error);
+    cursor: help;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 .sheet-container {
     margin-bottom: 20px;
 }
@@ -81,6 +168,236 @@
     font-style: italic;
 }
 
+/* Editing styles */
+.sheet-cell-editable {
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.sheet-cell-editable:hover {
+    background: var(--background-modifier-hover-inverse);
+}
+
+.sheet-cell-input {
+    width: 100%;
+    border: none;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: inherit;
+    font-family: inherit;
+    padding: 2px 4px;
+    outline: 2px solid var(--interactive-accent);
+    border-radius: 2px;
+    resize: none;
+}
+
+.sheet-cell-input:focus {
+    outline: 2px solid var(--interactive-accent);
+}
+
+.sheet-cell-textarea {
+    min-height: 60px;
+    max-height: 200px;
+    resize: vertical;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Cell selection */
+.sheet-cell-selected {
+    outline: 2px solid var(--interactive-accent) !important;
+    outline-offset: -2px;
+    background: var(--background-modifier-hover) !important;
+}
+
+.sheet-cell[tabindex="0"]:focus {
+    outline: 1px solid var(--interactive-accent-hover);
+    outline-offset: -1px;
+}
+
+/* Different input types */
+.sheet-cell-input[type="number"] {
+    text-align: right;
+}
+
+.sheet-cell-input[type="date"] {
+    min-width: 120px;
+}
+
+.sheet-cell-input[type="email"],
+.sheet-cell-input[type="url"] {
+    min-width: 150px;
+}
+
+/* Cell state indicators */
+.sheet-cell-modified {
+    background: var(--background-modifier-success-hover) !important;
+    border-left: 3px solid var(--text-accent);
+}
+
+.sheet-cell-invalid {
+    background: var(--background-modifier-error-hover) !important;
+    border-left: 3px solid var(--text-error);
+    color: var(--text-error);
+}
+
+.sheet-cell-modified.sheet-cell-editable:hover,
+.sheet-cell-invalid.sheet-cell-editable:hover {
+    background: var(--background-modifier-hover-inverse) !important;
+}
+
+/* Formula cells */
+.sheet-cell-formula {
+    background: var(--background-modifier-form-field) !important;
+    position: relative;
+}
+
+.sheet-formula-icon {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    font-size: 10px;
+    color: var(--text-accent);
+    font-weight: bold;
+    background: var(--background-primary);
+    padding: 1px 3px;
+    border-radius: 2px;
+    line-height: 1;
+}
+
+.sheet-formula-input {
+    font-family: monospace !important;
+    color: var(--text-accent) !important;
+    background: var(--background-modifier-form-field) !important;
+}
+
+/* Formula help popup */
+.sheet-formula-help {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 12px;
+    max-width: 400px;
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.sheet-formula-help .formula-functions,
+.sheet-formula-help .formula-examples {
+    margin-bottom: 8px;
+}
+
+.sheet-formula-help .formula-functions:last-child,
+.sheet-formula-help .formula-examples:last-child {
+    margin-bottom: 0;
+}
+
+.sheet-formula-help strong {
+    color: var(--text-accent);
+    display: block;
+    margin-bottom: 4px;
+}
+
+/* Context Menu */
+.sheet-context-menu {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 4px;
+    min-width: 120px;
+}
+
+.sheet-context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    color: var(--text-normal);
+    text-align: left;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.2s;
+}
+
+.sheet-context-menu-item:hover {
+    background: var(--background-modifier-hover);
+}
+
+.sheet-context-menu-item:active {
+    background: var(--background-modifier-active);
+}
+
+/* Toast notifications */
+.sheet-toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    padding: 12px 16px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    z-index: 1001;
+    font-size: 14px;
+    animation: toast-slide-up 0.3s ease-out;
+}
+
+@keyframes toast-slide-up {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+/* Orientation-specific styles */
+.sheet-landscape .sheet-toolbar {
+    flex-wrap: wrap;
+}
+
+.sheet-landscape .sheet-table-container {
+    max-height: 80vh !important;
+}
+
+.sheet-portrait .sheet-table-container {
+    max-height: 60vh !important;
+}
+
+/* Touch improvements */
+.sheet-cell-editable {
+    min-height: 44px; /* iOS recommended touch target size */
+    display: flex;
+    align-items: center;
+}
+
+/* Improve touch targets on small screens */
+@media (max-width: 480px) {
+    .sheet-cell-editable {
+        min-height: 48px;
+        padding: 8px;
+    }
+    
+    .sheet-toolbar button {
+        min-height: 44px;
+        padding: 8px 12px;
+    }
+    
+    .sheet-context-menu-item {
+        min-height: 44px;
+        padding: 12px 16px;
+        font-size: 16px;
+    }
+}
+
 /* Mobile optimizations */
 @media (max-width: 768px) {
     .mobile-sheet-viewer {
@@ -88,18 +405,39 @@
     }
     
     .sheet-cell {
-        padding: 6px 8px;
+        padding: 8px 10px; /* Increased for better touch targets */
         font-size: 12px;
         min-width: 60px;
         max-width: 120px;
+        min-height: 44px; /* iOS touch target recommendation */
     }
     
     .sheet-table-container {
         max-height: 60vh;
+        /* Enhanced touch scrolling */
+        -webkit-overflow-scrolling: touch;
+        scroll-behavior: smooth;
     }
     
     .sheet-title {
         font-size: 16px;
+    }
+    
+    /* Larger toolbar buttons for mobile */
+    .sheet-toolbar {
+        padding: 8px;
+        gap: 6px;
+    }
+    
+    .sheet-toolbar button {
+        font-size: 13px;
+        padding: 8px 10px;
+        min-height: 40px;
+    }
+    
+    /* Prevent accidental zoom on input focus */
+    .sheet-cell-input {
+        font-size: 16px !important;
     }
 }
 
