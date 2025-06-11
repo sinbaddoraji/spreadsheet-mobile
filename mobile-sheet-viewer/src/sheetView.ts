@@ -20,6 +20,14 @@ export class SheetView extends TextFileView {
     private fileWatcher: number | null = null;
     private lastFileContent: string = '';
     private conflictCheckInterval: number = 30000; // Check every 30 seconds
+    private isLargeFile: boolean = false;
+    private forceEditingEnabled: boolean = false;
+    private readonly fileSizeThresholds = {
+        mobile: 100000, // 100KB
+        tablet: 250000, // 250KB
+        desktop: 500000, // 500KB
+        maxCells: 1000 // Maximum number of cells for editing
+    };
 
     constructor(leaf: WorkspaceLeaf) {
         super(leaf);
@@ -45,6 +53,10 @@ export class SheetView extends TextFileView {
         console.log('SheetView: setViewData called with data:', data);
         this.data = data;
         this.lastFileContent = data;
+        
+        // Check file size and cell count before proceeding
+        this.checkFileSize(data);
+        
         this.sheetData = SheetParser.parse(data);
         this.dataManager = new DataManager(this.sheetData, 100, {
             enabled: true,
@@ -111,7 +123,14 @@ export class SheetView extends TextFileView {
             text: this.isEditing ? 'View Mode' : 'Edit Mode',
             cls: 'sheet-edit-toggle'
         });
-        editToggle.addEventListener('click', () => this.toggleEditMode());
+        
+        if (this.isLargeFile && !this.forceEditingEnabled) {
+            editToggle.disabled = true;
+            editToggle.title = 'Editing disabled for large files. Click the file size warning for options.';
+            editToggle.addClass('sheet-edit-disabled');
+        } else {
+            editToggle.addEventListener('click', () => this.toggleEditMode());
+        }
 
         // Undo/Redo buttons
         const undoBtn = toolbar.createEl('button', { 
@@ -127,6 +146,16 @@ export class SheetView extends TextFileView {
         });
         redoBtn.disabled = !this.dataManager?.canRedo();
         redoBtn.addEventListener('click', () => this.redo());
+
+        // File size warning indicator
+        if (this.isLargeFile) {
+            const fileSizeWarning = toolbar.createEl('button', {
+                text: '⚠️ Large File',
+                cls: 'sheet-file-size-warning'
+            });
+            fileSizeWarning.title = 'File is too large for optimal editing';
+            fileSizeWarning.addEventListener('click', () => this.showFileSizeDialog());
+        }
 
         // Auto-save status and modified cells indicator
         if (this.dataManager) {
@@ -272,8 +301,15 @@ export class SheetView extends TextFileView {
                     }
                 }
 
-                // Add interaction handlers
-                this.setupCellInteractionHandlers(td, sheetIndex, actualRow, actualCol);
+                // Add interaction handlers only if editing is enabled
+                if (!this.isLargeFile || this.forceEditingEnabled) {
+                    this.setupCellInteractionHandlers(td, sheetIndex, actualRow, actualCol);
+                } else {
+                    // For large files, only allow viewing
+                    td.addEventListener('click', () => {
+                        this.showToast('Editing disabled for large files');
+                    });
+                }
             }
         }
     }
@@ -1831,5 +1867,106 @@ export class SheetView extends TextFileView {
             console.error('Failed to create backup:', error);
             throw error;
         }
+    }
+
+    // File size management
+    private checkFileSize(data: string): void {
+        const fileSizeBytes = new TextEncoder().encode(data).length;
+        const deviceType = this.detectDeviceType();
+        const threshold = this.fileSizeThresholds[deviceType];
+        
+        // Check file size
+        const isTooBig = fileSizeBytes > threshold;
+        
+        // Check cell count
+        const totalCells = this.sheetData.reduce((count, sheet) => {
+            return count + sheet.celldata.length;
+        }, 0);
+        const hasTooManyCells = totalCells > this.fileSizeThresholds.maxCells;
+        
+        this.isLargeFile = isTooBig || hasTooManyCells;
+        
+        if (this.isLargeFile) {
+            console.warn(`Large file detected: ${fileSizeBytes} bytes, ${totalCells} cells`);
+        }
+    }
+
+    private detectDeviceType(): 'mobile' | 'tablet' | 'desktop' {
+        const userAgent = navigator.userAgent.toLowerCase();
+        const screenWidth = window.screen.width;
+        
+        if (/android|iphone|ipod/.test(userAgent) || screenWidth < 768) {
+            return 'mobile';
+        } else if (/ipad|tablet/.test(userAgent) || (screenWidth >= 768 && screenWidth < 1024)) {
+            return 'tablet';
+        } else {
+            return 'desktop';
+        }
+    }
+
+    private showFileSizeDialog(): void {
+        // Remove existing dialog
+        const existing = document.querySelector('.sheet-filesize-dialog');
+        if (existing) existing.remove();
+
+        const dialog = document.createElement('div');
+        dialog.className = 'sheet-filesize-dialog';
+        
+        const fileSizeBytes = new TextEncoder().encode(this.data).length;
+        const totalCells = this.sheetData.reduce((count, sheet) => count + sheet.celldata.length, 0);
+        const deviceType = this.detectDeviceType();
+        const threshold = this.fileSizeThresholds[deviceType];
+        
+        dialog.innerHTML = `
+            <div class="sheet-filesize-dialog-content">
+                <h3>📊 File Size Information</h3>
+                <div class="sheet-filesize-stats">
+                    <p><strong>File Size:</strong> ${this.formatFileSize(fileSizeBytes)}</p>
+                    <p><strong>Cell Count:</strong> ${totalCells.toLocaleString()}</p>
+                    <p><strong>Device Type:</strong> ${deviceType}</p>
+                    <p><strong>Size Limit:</strong> ${this.formatFileSize(threshold)}</p>
+                </div>
+                <div class="sheet-filesize-warning">
+                    <p>⚠️ <strong>Performance Warning</strong></p>
+                    <p>This file exceeds the recommended size for optimal performance on your device.</p>
+                    <ul>
+                        <li>Editing has been disabled to prevent browser freezing</li>
+                        <li>You can still view and scroll through the data</li>
+                        <li>Consider splitting large files into smaller sheets</li>
+                    </ul>
+                </div>
+                <div class="sheet-filesize-actions">
+                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="force-enable">
+                        🔓 Enable Editing (Risky)
+                    </button>
+                    <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="close">
+                        Close
+                    </button>
+                </div>
+            </div>
+        `;
+
+        const handleClick = (e: Event) => {
+            const target = e.target as HTMLElement;
+            const action = target.getAttribute('data-action');
+            
+            if (action === 'force-enable') {
+                this.forceEditingEnabled = true;
+                this.showToast('⚠️ Editing enabled - performance may be affected');
+                this.render(); // Re-render to enable editing controls
+                dialog.remove();
+            } else if (action === 'close') {
+                dialog.remove();
+            }
+        };
+
+        dialog.addEventListener('click', handleClick);
+        document.body.appendChild(dialog);
+    }
+
+    private formatFileSize(bytes: number): string {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+        return Math.round(bytes / (1024 * 1024)) + ' MB';
     }
 }
