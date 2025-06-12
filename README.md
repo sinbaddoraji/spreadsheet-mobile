@@ -1,6 +1,6 @@
 # Mobile Sheet Viewer
 
-A lightweight Obsidian plugin for viewing .sheet files on mobile devices.
+A lightweight Obsidian plugin for viewing .sheet files (https://github.com/divamgupta/obsidian-spreadsheets) on mobile devices.
 
 ## Features
 
@@ -17,3 +17,5 @@ A lightweight Obsidian plugin for viewing .sheet files on mobile devices.
 - Sticky row/column headers
 - Optimized font sizes for small screens
 - Efficient memory usage
+
+![583A63E1-C7C3-4EAE-8F3C-8B33751E9F45_4_5005_c](https://github.com/user-attachments/assets/88eaa885-ef09-4564-8e23-cd0f810505be)
