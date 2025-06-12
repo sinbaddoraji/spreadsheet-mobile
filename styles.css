@@ -179,7 +179,7 @@
 }
 
 .sheet-cell-input {
-    width: 100%;
+    width: var(--input-width, 100%);
     border: none;
     background: var(--background-primary);
     color: var(--text-normal);
@@ -196,6 +196,8 @@
 }
 
 .sheet-cell-textarea {
+    height: var(--textarea-height, auto);
+    width: var(--textarea-width, auto);
     min-height: 60px;
     max-height: 200px;
     resize: vertical;
@@ -1335,6 +1337,70 @@ body.keyboard-open .sheet-table-container {
     height: 1px;
     background: var(--background-modifier-border);
     margin: 4px 0;
+}
+
+/* Dynamic positioning styles */
+.sheet-formula-help {
+    position: fixed;
+    z-index: 1001;
+    top: var(--help-top, 0px);
+    left: var(--help-left, 0px);
+}
+
+/* Mobile input styles */
+.sheet-cell-input {
+    font-size: 14px;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    user-select: text;
+}
+
+/* iOS specific input styles */
+.sheet-cell-input-ios {
+    font-size: 16px !important;
+    transform-origin: top left;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
+}
+
+/* Android specific input styles */
+.sheet-cell-input-android {
+    -webkit-appearance: none;
+    border-radius: 4px;
+}
+
+/* Virtual keyboard handling */
+body.sheet-keyboard-open {
+    position: fixed;
+    width: 100%;
+}
+
+/* Text measurement helper */
+.sheet-text-measure {
+    visibility: hidden;
+    position: absolute;
+    white-space: pre;
+    pointer-events: none;
+}
+
+/* Dynamic cell styles using data attributes */
+[data-cell-style] {
+    /* Cell styles will be applied via CSS custom properties */
+}
+
+/* Format preset preview using data attributes */
+.sheet-format-preset-preview[data-format] {
+    /* Format styles will be applied via CSS custom properties */
+}
+
+/* Color button styles using data attributes */
+.sheet-color-btn[data-color] {
+    /* Background color will be applied via CSS custom properties */
+}
+
+.sheet-color-btn[data-type="background"] {
+    border: 2px solid #fff;
+    box-shadow: 0 0 0 1px #ccc;
 }
 
 /* Mobile responsive adjustments for format dialog */

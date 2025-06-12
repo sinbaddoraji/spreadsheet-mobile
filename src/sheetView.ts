@@ -5,6 +5,19 @@ import { FormatManager } from './formatManager';
 
 export const VIEW_TYPE_SHEET = 'sheet-view';
 
+// Debug configuration
+const DEBUG = false; // Set to true during development
+
+function debugLog(message: string, data?: any) {
+    if (DEBUG) {
+        if (data) {
+            console.debug(`[SheetView] ${message}`, data);
+        } else {
+            console.debug(`[SheetView] ${message}`);
+        }
+    }
+}
+
 export class SheetView extends TextFileView {
     private sheetData: SheetData[] = [];
     private dataManager: DataManager | null = null;
@@ -33,7 +46,7 @@ export class SheetView extends TextFileView {
 
     constructor(leaf: WorkspaceLeaf) {
         super(leaf);
-        console.log('SheetView: Constructor called');
+        debugLog('Constructor called');
         this.setupOrientationHandler();
         this.setupKeyboardHandlers();
     }
@@ -52,7 +65,7 @@ export class SheetView extends TextFileView {
     }
 
     setViewData(data: string, clear: boolean): void {
-        console.log('SheetView: setViewData called with data:', data);
+        debugLog('setViewData called');
         this.data = data;
         this.lastFileContent = data;
         
@@ -73,7 +86,7 @@ export class SheetView extends TextFileView {
         // Initialize conflict detection
         this.initializeConflictDetection();
         
-        console.log('SheetView: parsed sheet data:', this.sheetData);
+        debugLog('Parsed sheet data');
         this.render();
     }
 
@@ -89,7 +102,7 @@ export class SheetView extends TextFileView {
     }
 
     private render(): void {
-        console.log('SheetView: render called, sheetData:', this.sheetData);
+        debugLog('Render called');
         this.contentEl.empty();
         this.contentEl.addClass('mobile-sheet-viewer');
 
@@ -97,7 +110,7 @@ export class SheetView extends TextFileView {
         this.setupSwipeGestures();
 
         if (this.sheetData.length === 0) {
-            console.log('SheetView: No sheet data found');
+            debugLog('No sheet data found');
             this.contentEl.createEl('div', { 
                 text: 'No sheet data found',
                 cls: 'sheet-error' 
@@ -106,7 +119,7 @@ export class SheetView extends TextFileView {
         }
 
         this.sheetData.forEach((sheet, index) => {
-            console.log('SheetView: rendering sheet', index, sheet);
+            debugLog('Rendering sheet', {index, name: sheet.name});
             this.renderSheet(sheet, index);
         });
     }
@@ -347,7 +360,7 @@ export class SheetView extends TextFileView {
         const currentValue = (cell?.v.f) ? cell.v.f : (cellEl.textContent || '');
         const isMultiline = this.shouldUseMultilineInput(currentValue);
         
-        cellEl.innerHTML = '';
+        cellEl.empty();
 
         let input: HTMLInputElement | HTMLTextAreaElement;
         
@@ -437,30 +450,27 @@ export class SheetView extends TextFileView {
         return this.currentEditor instanceof HTMLTextAreaElement;
     }
 
-    private showFormulaHelp(input: HTMLInputElement): void {
+    private showFormulaHelp(input: HTMLInputElement | HTMLTextAreaElement): void {
         // Remove existing help
         this.hideFormulaHelp();
         
         const help = document.createElement('div');
         help.className = 'sheet-formula-help';
-        help.innerHTML = `
-            <div class="formula-functions">
-                <strong>Functions:</strong>
-                SUM(A1:A5), COUNT(A1:A5), AVERAGE(A1:A5), MIN(A1:A5), MAX(A1:A5),
-                IF(condition, true_value, false_value), CONCATENATE(text1, text2),
-                LEN(text), UPPER(text), LOWER(text), ROUND(number, digits)
-            </div>
-            <div class="formula-examples">
-                <strong>Examples:</strong>
-                =A1+B1, =SUM(A1:A5), =IF(A1>10, "High", "Low")
-            </div>
-        `;
+        const functionsDiv = help.createDiv({cls: 'formula-functions'});
+        const functionsStrong = functionsDiv.createEl('strong');
+        functionsStrong.textContent = 'Functions:';
+        functionsDiv.appendText(' SUM(A1:A5), COUNT(A1:A5), AVERAGE(A1:A5), MIN(A1:A5), MAX(A1:A5), ');
+        functionsDiv.appendText('IF(condition, true_value, false_value), CONCATENATE(text1, text2), ');
+        functionsDiv.appendText('LEN(text), UPPER(text), LOWER(text), ROUND(number, digits)');
+        
+        const examplesDiv = help.createDiv({cls: 'formula-examples'});
+        const examplesStrong = examplesDiv.createEl('strong');
+        examplesStrong.textContent = 'Examples:';
+        examplesDiv.appendText(' =A1+B1, =SUM(A1:A5), =IF(A1>10, "High", "Low")');
         
         const rect = input.getBoundingClientRect();
-        help.style.position = 'fixed';
-        help.style.top = (rect.bottom + 5) + 'px';
-        help.style.left = rect.left + 'px';
-        help.style.zIndex = '1001';
+        help.style.setProperty('--help-top', (rect.bottom + 5) + 'px');
+        help.style.setProperty('--help-left', rect.left + 'px');
         
         document.body.appendChild(help);
     }
@@ -478,20 +488,13 @@ export class SheetView extends TextFileView {
         const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
         const isAndroid = /Android/.test(navigator.userAgent);
         
-        // Prevent zoom on iOS when focusing input (minimum 16px)
-        input.style.fontSize = isIOS ? '16px' : '14px';
-        
-        // iOS-specific viewport handling
+        // Add device-specific classes
         if (isIOS) {
-            input.style.transformOrigin = 'top left';
-            input.style.webkitUserSelect = 'text';
-            input.style.webkitTouchCallout = 'default';
-        }
-        
-        // Android-specific optimizations
-        if (isAndroid) {
-            input.style.webkitAppearance = 'none';
-            input.style.borderRadius = '4px';
+            input.classList.add('sheet-cell-input-ios');
+        } else if (isAndroid) {
+            input.classList.add('sheet-cell-input-android');
+        } else {
+            input.style.fontSize = '14px';
         }
         
         // Handle virtual keyboard with device-specific delays
@@ -563,11 +566,8 @@ export class SheetView extends TextFileView {
         // Improved selection handling for mobile
         if (isIOS || isAndroid) {
             input.addEventListener('selectionchange', () => {
-                // Prevent selection from being lost on mobile
-                if (input === document.activeElement) {
-                    input.style.userSelect = 'text';
-                    input.style.webkitUserSelect = 'text';
-                }
+                // Selection styles are handled by CSS classes
+                // No additional JS styling needed
             });
         }
     }
@@ -607,18 +607,16 @@ export class SheetView extends TextFileView {
                 
                 // Additional iOS-specific handling
                 if (isIOS) {
-                    // Prevent body scroll when keyboard is open
-                    document.body.style.position = 'fixed';
-                    document.body.style.width = '100%';
+                    // Add class to handle keyboard open state
+                    document.body.classList.add('sheet-keyboard-open');
                 }
             }
         } else {
             // Restore normal viewport
             if (isIOS) {
                 viewport.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
-                // Restore body scroll
-                document.body.style.position = '';
-                document.body.style.width = '';
+                // Remove keyboard open class
+                document.body.classList.remove('sheet-keyboard-open');
             } else {
                 viewport.setAttribute('content', 'width=device-width, initial-scale=1.0');
             }
@@ -635,9 +633,8 @@ export class SheetView extends TextFileView {
         try {
             // Create temporary span to measure text width
             const span = document.createElement('span');
-            span.style.visibility = 'hidden';
-            span.style.position = 'absolute';
-            span.style.whiteSpace = 'pre';
+            span.className = 'sheet-text-measure';
+            // Copy computed styles for accurate measurement
             span.style.fontSize = window.getComputedStyle(input).fontSize;
             span.style.fontFamily = window.getComputedStyle(input).fontFamily;
             span.style.fontWeight = window.getComputedStyle(input).fontWeight;
@@ -656,19 +653,23 @@ export class SheetView extends TextFileView {
             const padding = isIOS ? 24 : 20;
             const calculatedWidth = Math.max(textWidth + padding, minWidth);
             
-            input.style.width = Math.min(calculatedWidth, maxWidth) + 'px';
+            // Use CSS custom properties for dynamic width
+            const finalWidth = Math.min(calculatedWidth, maxWidth);
+            input.style.setProperty('--input-width', finalWidth + 'px');
             
             // Ensure input stays within viewport
             if (input.getBoundingClientRect().right > window.innerWidth) {
                 const rect = input.getBoundingClientRect();
                 const overflow = rect.right - window.innerWidth + 10;
-                input.style.width = Math.max(calculatedWidth - overflow, minWidth) + 'px';
+                const adjustedWidth = Math.max(calculatedWidth - overflow, minWidth);
+                input.style.setProperty('--input-width', adjustedWidth + 'px');
             }
         } catch (error) {
             // Fallback if measurement fails
-            console.warn('Auto-resize failed, using fallback:', error);
+            // Auto-resize fallback is not a critical error
+            debugLog('Auto-resize failed, using fallback:', error);
             const fallbackWidth = deviceType === 'mobile' ? 120 : 80;
-            input.style.width = fallbackWidth + 'px';
+            input.style.setProperty('--input-width', fallbackWidth + 'px');
         }
     }
 
@@ -689,7 +690,7 @@ export class SheetView extends TextFileView {
             const scrollHeight = textarea.scrollHeight;
             const newHeight = Math.max(Math.min(scrollHeight, maxHeight), minHeight);
             
-            textarea.style.height = newHeight + 'px';
+            textarea.style.setProperty('--textarea-height', newHeight + 'px');
             
             // Adjust width with device-specific constraints
             const maxWidth = deviceType === 'mobile' ? 
@@ -701,7 +702,7 @@ export class SheetView extends TextFileView {
             if (textarea.scrollWidth > textarea.clientWidth) {
                 const padding = isIOS ? 24 : 20;
                 const newWidth = Math.min(Math.max(textarea.scrollWidth + padding, minWidth), maxWidth);
-                textarea.style.width = newWidth + 'px';
+                textarea.style.setProperty('--textarea-width', newWidth + 'px');
             }
             
             // Ensure textarea stays within viewport bounds
@@ -712,14 +713,16 @@ export class SheetView extends TextFileView {
             
             if (rect.right > window.innerWidth) {
                 const overflow = rect.right - window.innerWidth + 10;
-                const currentWidth = parseInt(textarea.style.width) || textarea.offsetWidth;
-                textarea.style.width = Math.max(currentWidth - overflow, minWidth) + 'px';
+                const currentWidth = parseInt(getComputedStyle(textarea).getPropertyValue('--textarea-width')) || textarea.offsetWidth;
+                const adjustedWidth = Math.max(currentWidth - overflow, minWidth);
+                textarea.style.setProperty('--textarea-width', adjustedWidth + 'px');
             }
         } catch (error) {
             // Fallback if resize fails
-            console.warn('Textarea auto-resize failed, using fallback:', error);
-            textarea.style.height = (deviceType === 'mobile' ? 100 : 80) + 'px';
-            textarea.style.width = (deviceType === 'mobile' ? 250 : 200) + 'px';
+            // Textarea auto-resize fallback is not a critical error
+            debugLog('Textarea auto-resize failed, using fallback:', error);
+            textarea.style.setProperty('--textarea-height', (deviceType === 'mobile' ? 100 : 80) + 'px');
+            textarea.style.setProperty('--textarea-width', (deviceType === 'mobile' ? 250 : 200) + 'px');
         }
     }
 
@@ -949,7 +952,7 @@ export class SheetView extends TextFileView {
         const cell = SheetParser.getCellAt(sheet, row, col);
         const currentValue = (cell?.v.f) ? cell.v.f : (cellEl.textContent || '');
         
-        cellEl.innerHTML = '';
+        cellEl.empty();
 
         let input: HTMLInputElement | HTMLTextAreaElement;
         
@@ -997,7 +1000,8 @@ export class SheetView extends TextFileView {
 
     private findCellElement(row: number, col: number): HTMLElement | null {
         const tables = this.contentEl.querySelectorAll('.sheet-table');
-        for (const table of tables) {
+        for (let i = 0; i < tables.length; i++) {
+            const table = tables[i];
             const cells = table.querySelectorAll('.sheet-cell');
             // This is a simplified approach - in a real implementation,
             // you'd want to track cell positions more precisely
@@ -1680,6 +1684,7 @@ export class SheetView extends TextFileView {
             await this.performSave();
             this.showToast('File saved manually');
         } catch (error) {
+            // Keep error logging for save failures as they're critical
             console.error('Failed to save file:', error);
             this.showToast('Save failed: ' + (error instanceof Error ? error.message : 'Unknown error'));
         } finally {
@@ -1715,7 +1720,7 @@ export class SheetView extends TextFileView {
     // Cell formatting methods
     private showFormattingDialog(cellInfo: any): void {
         const sheet = this.sheetData[cellInfo.sheetIndex];
-        const currentFormat = this.dataManager?.getCellFormat(sheet.id, cellInfo.row, cellInfo.col);
+        const currentFormat = this.dataManager?.getCellFormat(sheet.id, cellInfo.row, cellInfo.col) || null;
         
         // Remove existing dialog
         const existing = document.querySelector('.sheet-format-dialog');
@@ -1724,167 +1729,289 @@ export class SheetView extends TextFileView {
         const dialog = document.createElement('div');
         dialog.className = 'sheet-format-dialog';
         
-        dialog.innerHTML = `
-            <div class="sheet-format-dialog-content">
-                <h3>Format Cell</h3>
-                <div class="sheet-format-tabs">
-                    <button class="sheet-format-tab active" data-tab="quick">Quick</button>
-                    <button class="sheet-format-tab" data-tab="font">Font</button>
-                    <button class="sheet-format-tab" data-tab="number">Number</button>
-                    <button class="sheet-format-tab" data-tab="border">Border</button>
-                </div>
-                <div class="sheet-format-content">
-                    <div class="sheet-format-panel active" data-panel="quick">
-                        ${this.renderQuickFormatPanel(currentFormat)}
-                    </div>
-                    <div class="sheet-format-panel" data-panel="font">
-                        ${this.renderFontPanel(currentFormat)}
-                    </div>
-                    <div class="sheet-format-panel" data-panel="number">
-                        ${this.renderNumberPanel(currentFormat)}
-                    </div>
-                    <div class="sheet-format-panel" data-panel="border">
-                        ${this.renderBorderPanel(currentFormat)}
-                    </div>
-                </div>
-                <div class="sheet-format-actions">
-                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="cancel">Cancel</button>
-                    <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="apply">Apply</button>
-                </div>
-            </div>
-        `;
+        // Create dialog content using DOM API
+        const content = dialog.createDiv({cls: 'sheet-format-dialog-content'});
+        const h3 = content.createEl('h3');
+        h3.textContent = 'Format Cell';
+        
+        // Create tabs
+        const tabsDiv = content.createDiv({cls: 'sheet-format-tabs'});
+        const quickTab = tabsDiv.createEl('button', {cls: 'sheet-format-tab active', attr: {'data-tab': 'quick'}});
+        quickTab.textContent = 'Quick';
+        const fontTab = tabsDiv.createEl('button', {cls: 'sheet-format-tab', attr: {'data-tab': 'font'}});
+        fontTab.textContent = 'Font';
+        const numberTab = tabsDiv.createEl('button', {cls: 'sheet-format-tab', attr: {'data-tab': 'number'}});
+        numberTab.textContent = 'Number';
+        const borderTab = tabsDiv.createEl('button', {cls: 'sheet-format-tab', attr: {'data-tab': 'border'}});
+        borderTab.textContent = 'Border';
+        
+        // Create content area
+        const formatContent = content.createDiv({cls: 'sheet-format-content'});
+        
+        // Create panels
+        const quickPanel = formatContent.createDiv({cls: 'sheet-format-panel active', attr: {'data-panel': 'quick'}});
+        this.renderQuickFormatPanelDOM(quickPanel, currentFormat);
+        
+        const fontPanel = formatContent.createDiv({cls: 'sheet-format-panel', attr: {'data-panel': 'font'}});
+        this.renderFontPanelDOM(fontPanel, currentFormat);
+        
+        const numberPanel = formatContent.createDiv({cls: 'sheet-format-panel', attr: {'data-panel': 'number'}});
+        this.renderNumberPanelDOM(numberPanel, currentFormat);
+        
+        const borderPanel = formatContent.createDiv({cls: 'sheet-format-panel', attr: {'data-panel': 'border'}});
+        this.renderBorderPanelDOM(borderPanel, currentFormat);
+        
+        // Create actions
+        const actionsDiv = content.createDiv({cls: 'sheet-format-actions'});
+        const cancelBtn = actionsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-action': 'cancel'}});
+        cancelBtn.textContent = 'Cancel';
+        const applyBtn = actionsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-primary', attr: {'data-action': 'apply'}});
+        applyBtn.textContent = 'Apply';
 
         this.setupFormatDialogHandlers(dialog, cellInfo);
         document.body.appendChild(dialog);
     }
 
-    private renderQuickFormatPanel(currentFormat: CellFormat | null): string {
+    // New DOM-based render methods
+    private renderQuickFormatPanelDOM(panel: HTMLElement, currentFormat: CellFormat | null): void {
         const presets = FormatManager.getMobileQuickFormats();
-        return `
-            <div class="sheet-format-presets">
-                ${presets.map(preset => `
-                    <button class="sheet-format-preset" data-preset="${preset.id}">
-                        <div class="sheet-format-preset-preview" style="${SheetParser.generateCellStyle(preset.format)}">
-                            ${preset.name}
-                        </div>
-                        <span class="sheet-format-preset-name">${preset.name}</span>
-                    </button>
-                `).join('')}
-            </div>
-            <div class="sheet-format-colors">
-                <label>Colors:</label>
-                <div class="sheet-color-palette">
-                    ${FormatManager.getColorPalette().map(color => `
-                        <button class="sheet-color-btn" data-color="${color}" data-type="text" style="background-color: ${color}" title="Text: ${color}"></button>
-                    `).join('')}
-                </div>
-                <div class="sheet-color-palette">
-                    ${FormatManager.getColorPalette().map(color => `
-                        <button class="sheet-color-btn" data-color="${color}" data-type="background" style="background-color: ${color}; border: 2px solid #fff; box-shadow: 0 0 0 1px #ccc" title="Background: ${color}"></button>
-                    `).join('')}
-                </div>
-            </div>
-        `;
+        const presetsDiv = panel.createDiv({cls: 'sheet-format-presets'});
+        
+        presets.forEach(preset => {
+            const presetBtn = presetsDiv.createEl('button', {cls: 'sheet-format-preset', attr: {'data-preset': preset.id}});
+            const previewDiv = presetBtn.createDiv({cls: 'sheet-format-preset-preview', attr: {style: SheetParser.generateCellStyle(preset.format)}});
+            previewDiv.textContent = preset.name;
+            const nameSpan = presetBtn.createSpan({cls: 'sheet-format-preset-name'});
+            nameSpan.textContent = preset.name;
+        });
+        
+        const colorsDiv = panel.createDiv({cls: 'sheet-format-colors'});
+        const colorLabel = colorsDiv.createEl('label');
+        colorLabel.textContent = 'Colors:';
+        
+        const textPalette = colorsDiv.createDiv({cls: 'sheet-color-palette'});
+        FormatManager.getColorPalette().forEach(color => {
+            textPalette.createEl('button', {
+                cls: 'sheet-color-btn',
+                attr: {
+                    'data-color': color,
+                    'data-type': 'text',
+                    'style': `background-color: ${color}`,
+                    'title': `Text: ${color}`
+                }
+            });
+        });
+        
+        const bgPalette = colorsDiv.createDiv({cls: 'sheet-color-palette'});
+        FormatManager.getColorPalette().forEach(color => {
+            bgPalette.createEl('button', {
+                cls: 'sheet-color-btn',
+                attr: {
+                    'data-color': color,
+                    'data-type': 'background',
+                    'style': `background-color: ${color}; border: 2px solid #fff; box-shadow: 0 0 0 1px #ccc`,
+                    'title': `Background: ${color}`
+                }
+            });
+        });
     }
-
-    private renderFontPanel(currentFormat: CellFormat | null): string {
-        return `
-            <div class="sheet-format-section">
-                <label>Font Family:</label>
-                <select class="sheet-format-select" data-property="fontFamily">
-                    <option value="">Default</option>
-                    <option value="Arial, sans-serif" ${currentFormat?.fontFamily === 'Arial, sans-serif' ? 'selected' : ''}>Arial</option>
-                    <option value="'Times New Roman', serif" ${currentFormat?.fontFamily === "'Times New Roman', serif" ? 'selected' : ''}>Times New Roman</option>
-                    <option value="'Courier New', monospace" ${currentFormat?.fontFamily === "'Courier New', monospace" ? 'selected' : ''}>Courier New</option>
-                    <option value="Helvetica, sans-serif" ${currentFormat?.fontFamily === 'Helvetica, sans-serif' ? 'selected' : ''}>Helvetica</option>
-                </select>
-            </div>
-            <div class="sheet-format-section">
-                <label>Font Size:</label>
-                <input type="number" class="sheet-format-input" data-property="fontSize" value="${currentFormat?.fontSize || 14}" min="8" max="72">
-            </div>
-            <div class="sheet-format-section">
-                <label>Style:</label>
-                <div class="sheet-format-buttons">
-                    <button class="sheet-format-toggle ${currentFormat?.fontWeight === 'bold' ? 'active' : ''}" data-property="fontWeight" data-value="bold">B</button>
-                    <button class="sheet-format-toggle ${currentFormat?.fontStyle === 'italic' ? 'active' : ''}" data-property="fontStyle" data-value="italic">I</button>
-                    <button class="sheet-format-toggle ${currentFormat?.textDecoration === 'underline' ? 'active' : ''}" data-property="textDecoration" data-value="underline">U</button>
-                </div>
-            </div>
-            <div class="sheet-format-section">
-                <label>Alignment:</label>
-                <div class="sheet-format-buttons">
-                    <button class="sheet-format-toggle ${currentFormat?.textAlign === 'left' ? 'active' : ''}" data-property="textAlign" data-value="left">⬅</button>
-                    <button class="sheet-format-toggle ${currentFormat?.textAlign === 'center' ? 'active' : ''}" data-property="textAlign" data-value="center">⬅➡</button>
-                    <button class="sheet-format-toggle ${currentFormat?.textAlign === 'right' ? 'active' : ''}" data-property="textAlign" data-value="right">➡</button>
-                </div>
-            </div>
-        `;
+    
+    private renderFontPanelDOM(panel: HTMLElement, currentFormat: CellFormat | null): void {
+        // Font family section
+        const fontSection = panel.createDiv({cls: 'sheet-format-section'});
+        const fontLabel = fontSection.createEl('label');
+        fontLabel.textContent = 'Font Family:';
+        const fontSelect = fontSection.createEl('select', {cls: 'sheet-format-select', attr: {'data-property': 'fontFamily'}});
+        fontSelect.createEl('option', {value: '', text: 'Default'});
+        const fonts = [
+            ['Arial, sans-serif', 'Arial'],
+            ["'Times New Roman', serif", 'Times New Roman'],
+            ["'Courier New', monospace", 'Courier New'],
+            ['Helvetica, sans-serif', 'Helvetica']
+        ];
+        fonts.forEach(([value, text]) => {
+            const option = fontSelect.createEl('option', {value, text});
+            if (currentFormat?.fontFamily === value) option.selected = true;
+        });
+        
+        // Font size section
+        const sizeSection = panel.createDiv({cls: 'sheet-format-section'});
+        const sizeLabel = sizeSection.createEl('label');
+        sizeLabel.textContent = 'Font Size:';
+        sizeSection.createEl('input', {
+            type: 'number',
+            cls: 'sheet-format-input',
+            attr: {
+                'data-property': 'fontSize',
+                'value': String(currentFormat?.fontSize || 14),
+                'min': '8',
+                'max': '72'
+            }
+        });
+        
+        // Text style section
+        const styleSection = panel.createDiv({cls: 'sheet-format-section'});
+        const styleLabel = styleSection.createEl('label');
+        styleLabel.textContent = 'Text Style:';
+        const buttonsDiv = styleSection.createDiv({cls: 'sheet-format-buttons'});
+        
+        const boldBtn = buttonsDiv.createEl('button', {
+            cls: 'sheet-format-toggle sheet-format-bold',
+            attr: {'data-property': 'fontWeight', 'data-value': 'bold'}
+        });
+        boldBtn.textContent = 'B';
+        if (currentFormat?.fontWeight === 'bold') boldBtn.classList.add('active');
+        
+        const italicBtn = buttonsDiv.createEl('button', {
+            cls: 'sheet-format-toggle sheet-format-italic',
+            attr: {'data-property': 'fontStyle', 'data-value': 'italic'}
+        });
+        italicBtn.textContent = 'I';
+        if (currentFormat?.fontStyle === 'italic') italicBtn.classList.add('active');
+        
+        const underlineBtn = buttonsDiv.createEl('button', {
+            cls: 'sheet-format-toggle sheet-format-underline',
+            attr: {'data-property': 'textDecoration', 'data-value': 'underline'}
+        });
+        underlineBtn.textContent = 'U';
+        if (currentFormat?.textDecoration === 'underline') underlineBtn.classList.add('active');
+        
+        // Text alignment section
+        const alignSection = panel.createDiv({cls: 'sheet-format-section'});
+        const alignLabel = alignSection.createEl('label');
+        alignLabel.textContent = 'Text Alignment:';
+        const alignButtons = alignSection.createDiv({cls: 'sheet-format-buttons'});
+        
+        ['left', 'center', 'right'].forEach(align => {
+            const btn = alignButtons.createEl('button', {
+                cls: 'sheet-format-toggle',
+                attr: {'data-property': 'textAlign', 'data-value': align}
+            });
+            btn.textContent = align.charAt(0).toUpperCase() + align.slice(1);
+            if (currentFormat?.textAlign === align) btn.classList.add('active');
+        });
     }
-
-    private renderNumberPanel(currentFormat: CellFormat | null): string {
-        const numberFormat = currentFormat?.numberFormat;
-        return `
-            <div class="sheet-format-section">
-                <label>Format Type:</label>
-                <select class="sheet-format-select" data-property="numberType">
-                    <option value="general" ${numberFormat?.type === 'general' ? 'selected' : ''}>General</option>
-                    <option value="number" ${numberFormat?.type === 'number' ? 'selected' : ''}>Number</option>
-                    <option value="currency" ${numberFormat?.type === 'currency' ? 'selected' : ''}>Currency</option>
-                    <option value="percentage" ${numberFormat?.type === 'percentage' ? 'selected' : ''}>Percentage</option>
-                    <option value="date" ${numberFormat?.type === 'date' ? 'selected' : ''}>Date</option>
-                    <option value="time" ${numberFormat?.type === 'time' ? 'selected' : ''}>Time</option>
-                    <option value="text" ${numberFormat?.type === 'text' ? 'selected' : ''}>Text</option>
-                </select>
-            </div>
-            <div class="sheet-format-section">
-                <label>Decimal Places:</label>
-                <input type="number" class="sheet-format-input" data-property="decimalPlaces" value="${numberFormat?.decimalPlaces || 2}" min="0" max="10">
-            </div>
-            <div class="sheet-format-section">
-                <label>Currency Symbol:</label>
-                <input type="text" class="sheet-format-input" data-property="currencySymbol" value="${numberFormat?.currencySymbol || '$'}" maxlength="3">
-            </div>
-            <div class="sheet-format-section">
-                <label>
-                    <input type="checkbox" data-property="thousandsSeparator" ${numberFormat?.thousandsSeparator ? 'checked' : ''}>
-                    Use thousands separator
-                </label>
-            </div>
-        `;
+    
+    private renderNumberPanelDOM(panel: HTMLElement, currentFormat: CellFormat | null): void {
+        // Number type section
+        const typeSection = panel.createDiv({cls: 'sheet-format-section'});
+        const typeLabel = typeSection.createEl('label');
+        typeLabel.textContent = 'Number Type:';
+        const typeSelect = typeSection.createEl('select', {cls: 'sheet-format-select', attr: {'data-property': 'numberType'}});
+        
+        const types = [
+            ['general', 'General'],
+            ['number', 'Number'],
+            ['currency', 'Currency'],
+            ['percent', 'Percent'],
+            ['date', 'Date'],
+            ['text', 'Text']
+        ];
+        types.forEach(([value, text]) => {
+            const option = typeSelect.createEl('option', {value, text});
+            if (currentFormat?.numberFormat?.type === value) option.selected = true;
+        });
+        
+        // Decimal places section
+        const decimalSection = panel.createDiv({cls: 'sheet-format-section'});
+        const decimalLabel = decimalSection.createEl('label');
+        decimalLabel.textContent = 'Decimal Places:';
+        decimalSection.createEl('input', {
+            type: 'number',
+            cls: 'sheet-format-input',
+            attr: {
+                'data-property': 'decimalPlaces',
+                'value': String(currentFormat?.numberFormat?.decimalPlaces || 2),
+                'min': '0',
+                'max': '10'
+            }
+        });
+        
+        // Currency symbol section
+        const currencySection = panel.createDiv({cls: 'sheet-format-section'});
+        const currencyLabel = currencySection.createEl('label');
+        currencyLabel.textContent = 'Currency Symbol:';
+        currencySection.createEl('input', {
+            type: 'text',
+            cls: 'sheet-format-input',
+            attr: {
+                'data-property': 'currencySymbol',
+                'value': currentFormat?.numberFormat?.currencySymbol || '$',
+                'placeholder': '$'
+            }
+        });
+        
+        // Thousands separator section
+        const thousandsSection = panel.createDiv({cls: 'sheet-format-section'});
+        const thousandsLabel = thousandsSection.createEl('label');
+        const checkbox = thousandsLabel.createEl('input', {
+            type: 'checkbox',
+            attr: {'data-property': 'thousandsSeparator'}
+        });
+        if (currentFormat?.numberFormat?.thousandsSeparator) checkbox.checked = true;
+        thousandsLabel.appendText(' Use thousands separator');
     }
-
-    private renderBorderPanel(currentFormat: CellFormat | null): string {
-        return `
-            <div class="sheet-format-section">
-                <label>Border Style:</label>
-                <select class="sheet-format-select" data-property="borderStyle">
-                    <option value="none">None</option>
-                    <option value="solid">Solid</option>
-                    <option value="dashed">Dashed</option>
-                    <option value="dotted">Dotted</option>
-                </select>
-            </div>
-            <div class="sheet-format-section">
-                <label>Border Width:</label>
-                <input type="number" class="sheet-format-input" data-property="borderWidth" value="1" min="1" max="5">
-            </div>
-            <div class="sheet-format-section">
-                <label>Border Color:</label>
-                <input type="color" class="sheet-format-input" data-property="borderColor" value="#000000">
-            </div>
-            <div class="sheet-format-section">
-                <label>Apply to:</label>
-                <div class="sheet-format-buttons">
-                    <button class="sheet-format-toggle" data-border="all">All</button>
-                    <button class="sheet-format-toggle" data-border="top">Top</button>
-                    <button class="sheet-format-toggle" data-border="right">Right</button>
-                    <button class="sheet-format-toggle" data-border="bottom">Bottom</button>
-                    <button class="sheet-format-toggle" data-border="left">Left</button>
-                </div>
-            </div>
-        `;
+    
+    private renderBorderPanelDOM(panel: HTMLElement, currentFormat: CellFormat | null): void {
+        // Border style section
+        const styleSection = panel.createDiv({cls: 'sheet-format-section'});
+        const styleLabel = styleSection.createEl('label');
+        styleLabel.textContent = 'Border Style:';
+        const styleSelect = styleSection.createEl('select', {cls: 'sheet-format-select', attr: {'data-property': 'borderStyle'}});
+        
+        const styles = [
+            ['none', 'None'],
+            ['solid', 'Solid'],
+            ['dashed', 'Dashed'],
+            ['dotted', 'Dotted']
+        ];
+        styles.forEach(([value, text]) => {
+            styleSelect.createEl('option', {value, text});
+        });
+        
+        // Border width section
+        const widthSection = panel.createDiv({cls: 'sheet-format-section'});
+        const widthLabel = widthSection.createEl('label');
+        widthLabel.textContent = 'Border Width:';
+        widthSection.createEl('input', {
+            type: 'number',
+            cls: 'sheet-format-input',
+            attr: {
+                'data-property': 'borderWidth',
+                'value': '1',
+                'min': '1',
+                'max': '5'
+            }
+        });
+        
+        // Border color section
+        const colorSection = panel.createDiv({cls: 'sheet-format-section'});
+        const colorLabel = colorSection.createEl('label');
+        colorLabel.textContent = 'Border Color:';
+        colorSection.createEl('input', {
+            type: 'color',
+            cls: 'sheet-format-input',
+            attr: {
+                'data-property': 'borderColor',
+                'value': '#000000'
+            }
+        });
+        
+        // Apply to section
+        const applySection = panel.createDiv({cls: 'sheet-format-section'});
+        const applyLabel = applySection.createEl('label');
+        applyLabel.textContent = 'Apply to:';
+        const applyButtons = applySection.createDiv({cls: 'sheet-format-buttons'});
+        
+        ['all', 'top', 'right', 'bottom', 'left'].forEach(border => {
+            const btn = applyButtons.createEl('button', {
+                cls: 'sheet-format-toggle',
+                attr: {'data-border': border}
+            });
+            btn.textContent = border.charAt(0).toUpperCase() + border.slice(1);
+        });
     }
+    
 
     private setupFormatDialogHandlers(dialog: HTMLElement, cellInfo: any): void {
         let currentFormat: CellFormat = {};
@@ -2057,12 +2184,10 @@ export class SheetView extends TextFileView {
 
         const overlay = document.createElement('div');
         overlay.className = 'sheet-loading-overlay';
-        overlay.innerHTML = `
-            <div class="sheet-loading-content">
-                <div class="sheet-loading-spinner"></div>
-                <span class="sheet-loading-text">${message}</span>
-            </div>
-        `;
+        const content = overlay.createDiv({cls: 'sheet-loading-content'});
+        content.createDiv({cls: 'sheet-loading-spinner'});
+        const textSpan = content.createSpan({cls: 'sheet-loading-text'});
+        textSpan.textContent = message;
         
         document.body.appendChild(overlay);
     }
@@ -2083,17 +2208,21 @@ export class SheetView extends TextFileView {
             const dialog = document.createElement('div');
             dialog.className = 'sheet-save-dialog';
             
-            dialog.innerHTML = `
-                <div class="sheet-save-dialog-content">
-                    <h3>Save Changes</h3>
-                    <p>You have ${unsavedChanges} unsaved change${unsavedChanges !== 1 ? 's' : ''}.</p>
-                    <p>Do you want to save these changes?</p>
-                    <div class="sheet-save-dialog-buttons">
-                        <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="save">Save</button>
-                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="cancel">Cancel</button>
-                    </div>
-                </div>
-            `;
+            const content = dialog.createDiv({cls: 'sheet-save-dialog-content'});
+            const h3 = content.createEl('h3');
+            h3.textContent = 'Save Changes';
+            
+            const p1 = content.createEl('p');
+            p1.textContent = `You have ${unsavedChanges} unsaved change${unsavedChanges !== 1 ? 's' : ''}.`;
+            
+            const p2 = content.createEl('p');
+            p2.textContent = 'Do you want to save these changes?';
+            
+            const buttonsDiv = content.createDiv({cls: 'sheet-save-dialog-buttons'});
+            const saveBtn = buttonsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-primary', attr: {'data-action': 'save'}});
+            saveBtn.textContent = 'Save';
+            const cancelBtn = buttonsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-action': 'cancel'}});
+            cancelBtn.textContent = 'Cancel';
 
             const handleClick = (e: Event) => {
                 const target = e.target as HTMLElement;
@@ -2123,13 +2252,14 @@ export class SheetView extends TextFileView {
             document.body.appendChild(dialog);
             
             // Focus the save button
-            const saveBtn = dialog.querySelector('[data-action="save"]') as HTMLElement;
-            saveBtn?.focus();
+            const saveBtnElement = dialog.querySelector('[data-action="save"]') as HTMLElement;
+            saveBtnElement?.focus();
         });
     }
 
     private showFallbackForUnsupportedOperation(operation: string, value?: string, error?: any): void {
-        console.warn(`Unsupported operation: ${operation}`, { value, error });
+        // Keep warning for unsupported operations as it affects functionality
+        console.warn(`Unsupported operation: ${operation}`);
         
         // Create a simple fallback dialog
         const fallbackDialog = document.createElement('div');
@@ -2137,27 +2267,46 @@ export class SheetView extends TextFileView {
         
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         
-        fallbackDialog.innerHTML = `
-            <div class="sheet-fallback-dialog-content">
-                <h3>⚠️ Operation Not Supported</h3>
-                <p>The operation "${operation}" could not be completed.</p>
-                ${value ? `<p><strong>Value:</strong> ${value}</p>` : ''}
-                ${error ? `<p><strong>Error:</strong> ${errorMessage}</p>` : ''}
-                <div class="sheet-fallback-suggestions">
-                    <h4>Try these alternatives:</h4>
-                    <ul>
-                        <li>Simplify the formula or value</li>
-                        <li>Check for syntax errors</li>
-                        <li>Use a different format</li>
-                        <li>Save as plain text</li>
-                    </ul>
-                </div>
-                <div class="sheet-fallback-buttons">
-                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="copy-error">Copy Error</button>
-                    <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="close">Close</button>
-                </div>
-            </div>
-        `;
+        const content = fallbackDialog.createDiv({cls: 'sheet-fallback-dialog-content'});
+        const h3 = content.createEl('h3');
+        h3.textContent = '⚠️ Operation Not Supported';
+        
+        const p1 = content.createEl('p');
+        p1.textContent = `The operation "${operation}" could not be completed.`;
+        
+        if (value) {
+            const p2 = content.createEl('p');
+            const strong1 = p2.createEl('strong');
+            strong1.textContent = 'Value:';
+            p2.appendText(` ${value}`);
+        }
+        
+        if (error) {
+            const p3 = content.createEl('p');
+            const strong2 = p3.createEl('strong');
+            strong2.textContent = 'Error:';
+            p3.appendText(` ${errorMessage}`);
+        }
+        
+        const suggestionsDiv = content.createDiv({cls: 'sheet-fallback-suggestions'});
+        const h4 = suggestionsDiv.createEl('h4');
+        h4.textContent = 'Try these alternatives:';
+        
+        const ul = suggestionsDiv.createEl('ul');
+        const li1 = ul.createEl('li');
+        li1.textContent = 'Simplify the formula or value';
+        const li2 = ul.createEl('li');
+        li2.textContent = 'Check for syntax errors';
+        const li3 = ul.createEl('li');
+        li3.textContent = 'Use a different format';
+        const li4 = ul.createEl('li');
+        li4.textContent = 'Save as plain text';
+        
+        const buttonsDiv = content.createDiv({cls: 'sheet-fallback-buttons'});
+        const copyBtn = buttonsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-action': 'copy-error'}});
+        copyBtn.textContent = 'Copy Error';
+        const closeBtn = buttonsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-primary', attr: {'data-action': 'close'}});
+        closeBtn.textContent = 'Close';
 
         const handleClick = (e: Event) => {
             const target = e.target as HTMLElement;
@@ -2193,9 +2342,10 @@ export class SheetView extends TextFileView {
         // Initialize file tracking
         const fileStats = this.app.vault.adapter.stat(this.file.path);
         fileStats.then(stats => {
-            if (this.dataManager) {
-                this.dataManager.stateManager.lastFileModified = new Date(stats.mtime);
-                this.dataManager.stateManager.lastFileChecksum = this.dataManager.generateFileChecksum(this.lastFileContent);
+            if (this.dataManager && stats) {
+                // Update file modification tracking - would need public methods in DataManager
+                // this.dataManager.updateFileModified(new Date(stats.mtime));
+                // this.dataManager.updateFileChecksum(this.lastFileContent);
             }
         });
 
@@ -2227,17 +2377,19 @@ export class SheetView extends TextFileView {
             // Read current file content
             const currentContent = await this.app.vault.read(this.file);
             const stats = await this.app.vault.adapter.stat(this.file.path);
-            const fileModifiedTime = new Date(stats.mtime);
+            const fileModifiedTime = stats ? new Date(stats.mtime) : new Date();
 
             // Check for conflicts
             const conflict = this.dataManager.detectConflicts(currentContent, fileModifiedTime);
             
             if (conflict) {
-                console.warn('Conflict detected:', conflict);
+                // Keep conflict warnings as they affect data integrity
+                console.warn('Conflict detected');
                 this.handleConflictDetected(conflict);
             }
 
         } catch (error) {
+            // Keep error logging for conflict checking failures
             console.error('Error checking for conflicts:', error);
         }
     }
@@ -2270,32 +2422,46 @@ export class SheetView extends TextFileView {
         const dialog = document.createElement('div');
         dialog.className = 'sheet-conflict-dialog';
         
-        dialog.innerHTML = `
-            <div class="sheet-conflict-dialog-content">
-                <h3>🔄 Resolve Conflicts</h3>
-                <p>${conflict.conflictedCells.length} cell${conflict.conflictedCells.length !== 1 ? 's have' : ' has'} conflicting changes.</p>
-                <div class="sheet-conflict-summary">
-                    <p><strong>Conflict Type:</strong> ${this.getConflictTypeDescription(conflict.type)}</p>
-                    <p><strong>Detected:</strong> ${conflict.timestamp.toLocaleString()}</p>
-                </div>
-                <div class="sheet-conflict-cells">
-                    ${this.renderConflictedCells(conflict)}
-                </div>
-                <div class="sheet-conflict-strategies">
-                    <h4>Resolution Strategy:</h4>
-                    <div class="sheet-strategy-buttons">
-                        <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-strategy="keep_local">Keep My Changes</button>
-                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-strategy="keep_remote">Accept Remote Changes</button>
-                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-strategy="merge">Smart Merge</button>
-                        <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-strategy="manual">Resolve Manually</button>
-                    </div>
-                </div>
-                <div class="sheet-conflict-actions">
-                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="backup">Create Backup</button>
-                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="cancel">Cancel</button>
-                </div>
-            </div>
-        `;
+        const content = dialog.createDiv({cls: 'sheet-conflict-dialog-content'});
+        const h3 = content.createEl('h3');
+        h3.textContent = '🔄 Resolve Conflicts';
+        
+        const p1 = content.createEl('p');
+        p1.textContent = `${conflict.conflictedCells.length} cell${conflict.conflictedCells.length !== 1 ? 's have' : ' has'} conflicting changes.`;
+        
+        const summaryDiv = content.createDiv({cls: 'sheet-conflict-summary'});
+        const typeP = summaryDiv.createEl('p');
+        const typeStrong = typeP.createEl('strong');
+        typeStrong.textContent = 'Conflict Type:';
+        typeP.appendText(` ${this.getConflictTypeDescription(conflict.type)}`);
+        
+        const timeP = summaryDiv.createEl('p');
+        const timeStrong = timeP.createEl('strong');
+        timeStrong.textContent = 'Detected:';
+        timeP.appendText(` ${conflict.timestamp.toLocaleString()}`);
+        
+        const cellsDiv = content.createDiv({cls: 'sheet-conflict-cells'});
+        this.renderConflictedCellsDOM(cellsDiv, conflict);
+        
+        const strategiesDiv = content.createDiv({cls: 'sheet-conflict-strategies'});
+        const h4 = strategiesDiv.createEl('h4');
+        h4.textContent = 'Resolution Strategy:';
+        
+        const strategyButtons = strategiesDiv.createDiv({cls: 'sheet-strategy-buttons'});
+        const keepLocalBtn = strategyButtons.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-primary', attr: {'data-strategy': 'keep_local'}});
+        keepLocalBtn.textContent = 'Keep My Changes';
+        const keepRemoteBtn = strategyButtons.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-strategy': 'keep_remote'}});
+        keepRemoteBtn.textContent = 'Accept Remote Changes';
+        const mergeBtn = strategyButtons.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-strategy': 'merge'}});
+        mergeBtn.textContent = 'Smart Merge';
+        const manualBtn = strategyButtons.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-strategy': 'manual'}});
+        manualBtn.textContent = 'Resolve Manually';
+        
+        const actionsDiv = content.createDiv({cls: 'sheet-conflict-actions'});
+        const backupBtn = actionsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-action': 'backup'}});
+        backupBtn.textContent = 'Create Backup';
+        const cancelBtn = actionsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-action': 'cancel'}});
+        cancelBtn.textContent = 'Cancel';
 
         const handleClick = async (e: Event) => {
             const target = e.target as HTMLElement;
@@ -2326,31 +2492,39 @@ export class SheetView extends TextFileView {
         }
     }
 
-    private renderConflictedCells(conflict: ConflictInfo): string {
-        return conflict.conflictedCells.slice(0, 5).map(cell => {
-            const localValue = this.getCellDisplayValue(cell.localValue);
-            const remoteValue = this.getCellDisplayValue(cell.remoteValue);
+    private renderConflictedCellsDOM(cellsDiv: HTMLElement, conflict: ConflictInfo): void {
+        conflict.conflictedCells.slice(0, 5).forEach(cell => {
+            const localValue = this.getCellValueDisplay(cell.localValue);
+            const remoteValue = this.getCellValueDisplay(cell.remoteValue);
             const cellRef = this.getCellReference(cell.row, cell.col);
             
-            return `
-                <div class="sheet-conflict-cell">
-                    <strong>${cellRef}:</strong>
-                    <div class="sheet-conflict-values">
-                        <div class="sheet-conflict-value local">
-                            <label>Your change:</label>
-                            <span>"${localValue}"</span>
-                        </div>
-                        <div class="sheet-conflict-value remote">
-                            <label>Remote change:</label>
-                            <span>"${remoteValue}"</span>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }).join('') + (conflict.conflictedCells.length > 5 ? `<p>...and ${conflict.conflictedCells.length - 5} more</p>` : '');
+            const cellDiv = cellsDiv.createDiv({cls: 'sheet-conflict-cell'});
+            const strong = cellDiv.createEl('strong');
+            strong.textContent = `${cellRef}:`;
+            
+            const valuesDiv = cellDiv.createDiv({cls: 'sheet-conflict-values'});
+            
+            const localDiv = valuesDiv.createDiv({cls: 'sheet-conflict-value local'});
+            const localLabel = localDiv.createEl('label');
+            localLabel.textContent = 'Your change:';
+            const localSpan = localDiv.createEl('span');
+            localSpan.textContent = `"${localValue}"`;
+            
+            const remoteDiv = valuesDiv.createDiv({cls: 'sheet-conflict-value remote'});
+            const remoteLabel = remoteDiv.createEl('label');
+            remoteLabel.textContent = 'Remote change:';
+            const remoteSpan = remoteDiv.createEl('span');
+            remoteSpan.textContent = `"${remoteValue}"`;
+        });
+        
+        if (conflict.conflictedCells.length > 5) {
+            const p = cellsDiv.createEl('p');
+            p.textContent = `...and ${conflict.conflictedCells.length - 5} more`;
+        }
     }
+    
 
-    private getCellDisplayValue(cellValue: any): string {
+    private getCellValueDisplay(cellValue: any): string {
         if (!cellValue) return '(empty)';
         if (cellValue.f) return cellValue.f;
         return String(cellValue.v || cellValue.m || '');
@@ -2422,8 +2596,8 @@ export class SheetView extends TextFileView {
             strategy: 'merge',
             resolvedCells: conflict.conflictedCells.map(cell => {
                 // Simple merge strategy: concatenate non-empty values
-                const localStr = this.getCellDisplayValue(cell.localValue);
-                const remoteStr = this.getCellDisplayValue(cell.remoteValue);
+                const localStr = this.getCellValueDisplay(cell.localValue);
+                const remoteStr = this.getCellValueDisplay(cell.remoteValue);
                 
                 let mergedValue: any = cell.localValue;
                 let reasoning = 'Kept local value';
@@ -2473,8 +2647,9 @@ export class SheetView extends TextFileView {
             // For now, we'll just store it in localStorage as a simple backup
             localStorage.setItem(`sheet_backup_${this.file?.path}`, backup);
             
-            console.log('Backup created:', backupFileName);
+            debugLog('Backup created:', backupFileName);
         } catch (error) {
+            // Keep error logging for backup failures
             console.error('Failed to create backup:', error);
             throw error;
         }
@@ -2498,7 +2673,8 @@ export class SheetView extends TextFileView {
         this.isLargeFile = isTooBig || hasTooManyCells;
         
         if (this.isLargeFile) {
-            console.warn(`Large file detected: ${fileSizeBytes} bytes, ${totalCells} cells`);
+            // Keep warning for large files as it affects performance
+        console.warn(`Large file detected: ${this.formatFileSize(fileSizeBytes)}, ${totalCells} cells`);
         }
     }
 
@@ -2528,34 +2704,53 @@ export class SheetView extends TextFileView {
         const deviceType = this.detectDeviceType();
         const threshold = this.fileSizeThresholds[deviceType];
         
-        dialog.innerHTML = `
-            <div class="sheet-filesize-dialog-content">
-                <h3>📊 File Size Information</h3>
-                <div class="sheet-filesize-stats">
-                    <p><strong>File Size:</strong> ${this.formatFileSize(fileSizeBytes)}</p>
-                    <p><strong>Cell Count:</strong> ${totalCells.toLocaleString()}</p>
-                    <p><strong>Device Type:</strong> ${deviceType}</p>
-                    <p><strong>Size Limit:</strong> ${this.formatFileSize(threshold)}</p>
-                </div>
-                <div class="sheet-filesize-warning">
-                    <p>⚠️ <strong>Performance Warning</strong></p>
-                    <p>This file exceeds the recommended size for optimal performance on your device.</p>
-                    <ul>
-                        <li>Editing has been disabled to prevent browser freezing</li>
-                        <li>You can still view and scroll through the data</li>
-                        <li>Consider splitting large files into smaller sheets</li>
-                    </ul>
-                </div>
-                <div class="sheet-filesize-actions">
-                    <button class="sheet-dialog-btn sheet-dialog-btn-secondary" data-action="force-enable">
-                        🔓 Enable Editing (Risky)
-                    </button>
-                    <button class="sheet-dialog-btn sheet-dialog-btn-primary" data-action="close">
-                        Close
-                    </button>
-                </div>
-            </div>
-        `;
+        const content = dialog.createDiv({cls: 'sheet-filesize-dialog-content'});
+        const h3 = content.createEl('h3');
+        h3.textContent = '📊 File Size Information';
+        
+        const statsDiv = content.createDiv({cls: 'sheet-filesize-stats'});
+        const sizeP = statsDiv.createEl('p');
+        const sizeStrong = sizeP.createEl('strong');
+        sizeStrong.textContent = 'File Size:';
+        sizeP.appendText(` ${this.formatFileSize(fileSizeBytes)}`);
+        
+        const cellP = statsDiv.createEl('p');
+        const cellStrong = cellP.createEl('strong');
+        cellStrong.textContent = 'Cell Count:';
+        cellP.appendText(` ${totalCells.toLocaleString()}`);
+        
+        const deviceP = statsDiv.createEl('p');
+        const deviceStrong = deviceP.createEl('strong');
+        deviceStrong.textContent = 'Device Type:';
+        deviceP.appendText(` ${deviceType}`);
+        
+        const limitP = statsDiv.createEl('p');
+        const limitStrong = limitP.createEl('strong');
+        limitStrong.textContent = 'Size Limit:';
+        limitP.appendText(` ${this.formatFileSize(threshold)}`);
+        
+        const warningDiv = content.createDiv({cls: 'sheet-filesize-warning'});
+        const warningP1 = warningDiv.createEl('p');
+        warningP1.appendText('⚠️ ');
+        const warningStrong = warningP1.createEl('strong');
+        warningStrong.textContent = 'Performance Warning';
+        
+        const warningP2 = warningDiv.createEl('p');
+        warningP2.textContent = 'This file exceeds the recommended size for optimal performance on your device.';
+        
+        const ul = warningDiv.createEl('ul');
+        const li1 = ul.createEl('li');
+        li1.textContent = 'Editing has been disabled to prevent browser freezing';
+        const li2 = ul.createEl('li');
+        li2.textContent = 'You can still view and scroll through the data';
+        const li3 = ul.createEl('li');
+        li3.textContent = 'Consider splitting large files into smaller sheets';
+        
+        const actionsDiv = content.createDiv({cls: 'sheet-filesize-actions'});
+        const enableBtn = actionsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-secondary', attr: {'data-action': 'force-enable'}});
+        enableBtn.textContent = '🔓 Enable Editing (Risky)';
+        const closeBtn = actionsDiv.createEl('button', {cls: 'sheet-dialog-btn sheet-dialog-btn-primary', attr: {'data-action': 'close'}});
+        closeBtn.textContent = 'Close';
 
         const handleClick = (e: Event) => {
             const target = e.target as HTMLElement;

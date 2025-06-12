@@ -1,5 +1,5 @@
 export interface SheetCellValue {
-    v?: string | number;
+    v?: string | number | boolean;
     m?: string;
     f?: string;
     ct?: { fa: string; t: string };
@@ -188,19 +188,32 @@ export interface SheetStateManager {
     lastFileModified?: Date;
 }
 
+// Debug configuration
+const DEBUG = false; // Set to true during development
+
+function debugLog(message: string, data?: any) {
+    if (DEBUG) {
+        if (data) {
+            console.debug(`[SheetParser] ${message}`, data);
+        } else {
+            console.debug(`[SheetParser] ${message}`);
+        }
+    }
+}
+
 export class SheetParser {
     static parse(content: string): SheetData[] {
-        console.log('SheetParser: parsing content:', content);
+        debugLog('Parsing content');
         try {
             const data = JSON.parse(content);
-            console.log('SheetParser: parsed JSON:', data);
+            debugLog('Parsed JSON');
             if (Array.isArray(data)) {
                 const result = data.map(sheet => this.normalizeSheet(sheet));
-                console.log('SheetParser: normalized sheets:', result);
+                debugLog('Normalized sheets');
                 return result;
             }
             const result = [this.normalizeSheet(data)];
-            console.log('SheetParser: normalized single sheet:', result);
+            debugLog('Normalized single sheet');
             return result;
         } catch (error) {
             console.error('Failed to parse sheet:', error, 'Content:', content);
@@ -513,7 +526,8 @@ export class SheetParser {
         if (cellValue.v !== undefined && cellValue.s?.numberFormat) {
             if (typeof cellValue.v === 'number') {
                 return this.formatNumberValue(cellValue.v, cellValue.s.numberFormat);
-            } else if (cellValue.s.numberFormat.type === 'date' || cellValue.s.numberFormat.type === 'time') {
+            } else if ((cellValue.s.numberFormat.type === 'date' || cellValue.s.numberFormat.type === 'time') && 
+                       (typeof cellValue.v === 'string' || typeof cellValue.v === 'number')) {
                 return this.formatDateValue(cellValue.v, cellValue.s.numberFormat);
             }
         }
@@ -1417,7 +1431,7 @@ export class DataManager {
             this.stateManager.autoSaveState.saveCount++;
             this.stateManager.autoSaveState.retryCount = 0;
             
-            console.log('Auto-save successful');
+            debugLog('Auto-save successful');
             
         } catch (error) {
             console.error('Auto-save failed:', error);
